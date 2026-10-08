@@ -1,6 +1,8 @@
 package bptree
 
 import (
+	"errors"
+	"math"
 	"runtime"
 	"sync"
 )
@@ -143,20 +145,27 @@ func (t *Tree) Close() error {
 // can form.
 const maxConcurrentOps = 20
 
-// retryOnPoolStarvation retries an op body when the buffer pool is temporarily
-// exhausted; other goroutines release frames as they progress.
+// errRestart is an internal sentinel: a left-sibling TryLock failed, so the
+// operation released everything and retries from the root.
+var errRestart = errors.New("bptree: restart operation")
+
+// retryOp retries an op body on temporary failures: buffer pool starvation
+// (ErrNoFreeFrame) or a left-sibling TryLock loss (errRestart). Waiters and
+// retrying ops never hold pins while blocked, so progress is guaranteed.
 const maxOpRetries = 1000
 
-func retryOnPoolStarvation(op func() error) error {
+func retryOp(op func() error) error {
+	var last error
 	for i := 0; i < maxOpRetries; i++ {
 		err := op()
-		if err == ErrNoFreeFrame {
+		if err == ErrNoFreeFrame || err == errRestart {
+			last = err
 			runtime.Gosched()
 			continue
 		}
 		return err
 	}
-	return ErrNoFreeFrame
+	return last
 }
 
 // allocPageRetry/fetchRetry are used in the middle of structural propagation,
@@ -225,7 +234,7 @@ func (t *Tree) Get(key int64) (int64, bool, error) {
 	defer t.releaseOp()
 	var v int64
 	var ok bool
-	err := retryOnPoolStarvation(func() error {
+	err := retryOp(func() error {
 		var err error
 		v, ok, err = t.get(key)
 		return err
@@ -275,7 +284,7 @@ func (t *Tree) Put(key, value int64) error {
 	}
 	t.acquireOp()
 	defer t.releaseOp()
-	err := retryOnPoolStarvation(func() error { return t.put(key, value) })
+	err := retryOp(func() error { return t.put(key, value) })
 	// Persist meta on every Put/Delete so freelist/root changes reach the
 	// meta page eagerly (Close flushes regardless). Note writeMeta can fail
 	// after put committed; upsert is idempotent so reporting it is safe.
@@ -456,4 +465,351 @@ func (t *Tree) put(key, value int64) (err error) {
 		rootHeld = false
 	}
 	return nil
+}
+
+// Delete removes key. Returns ok=false when the key is absent.
+func (t *Tree) Delete(key int64) (bool, error) {
+	if t.closed {
+		return false, ErrClosed
+	}
+	t.acquireOp()
+	defer t.releaseOp()
+	var ok bool
+	err := retryOp(func() error {
+		var e error
+		var removed bool
+		removed, e = t.delete(key)
+		ok = ok || removed // a key removed by a previous retry stays removed
+		return e
+	})
+	if werr := t.writeMeta(); werr != nil && err == nil {
+		err = werr
+	}
+	return ok, err
+}
+
+func (t *Tree) delete(key int64) (bool, error) {
+	var held heldStack
+	var cur, sib, parent *frame
+	rootHeld := true
+
+	// Deferred cleanup: see put() for the tracking contract.
+	defer func() {
+		if sib != nil {
+			t.release(sib, true)
+		}
+		if parent != nil {
+			t.release(parent, true)
+		}
+		if cur != nil {
+			t.release(cur, true)
+		}
+		for i := len(held.frames) - 1; i >= 0; i-- {
+			t.release(held.frames[i], true)
+		}
+		if rootHeld {
+			t.rootMu.Unlock()
+		}
+	}()
+
+	t.rootMu.Lock()
+	rootF, err := t.pool.fetch(t.meta.rootPageID)
+	if err != nil {
+		return false, err
+	}
+	cur = rootF
+	cur.latch.Lock()
+	if safeForDelete(cur.data[:]) {
+		// A safe root cannot shrink to empty this op — release rootMu early.
+		t.rootMu.Unlock()
+		rootHeld = false
+	}
+
+	// Same W-crabbing as put, with the delete safety criterion.
+	for !isLeaf(cur.data[:]) {
+		ci := internalFindChildIdx(cur.data[:], key)
+		cf, err := t.pool.fetch(internalChild(cur.data[:], ci))
+		if err != nil {
+			return false, err
+		}
+		cf.latch.Lock()
+		if safeForDelete(cf.data[:]) {
+			t.releaseHeld(&held)
+			t.release(cur, false)
+		} else {
+			if safeForDelete(cur.data[:]) {
+				t.releaseHeld(&held)
+			}
+			held.frames = append(held.frames, cur)
+			held.idxs = append(held.idxs, ci)
+		}
+		cur = cf
+	}
+
+	// cur is the W-latched leaf.
+	pos, found := leafFindPos(cur.data[:], key)
+	if found {
+		leafRemoveAt(cur.data[:], pos)
+	}
+	if int(nodeCount(cur.data[:])) >= MinLeafPairs {
+		// Key removed (or absent) and no underflow — done.
+		t.release(cur, found)
+		cur = nil
+		t.releaseHeld(&held)
+		if rootHeld {
+			t.rootMu.Unlock()
+			rootHeld = false
+		}
+		return found, nil
+	}
+
+	// cur underflowed — propagate merges/borrows upward. `cur` keeps
+	// pointing at the node currently being fixed (leaf first, then parents).
+	//
+	// Note: an errRestart can abandon an already-committed lower merge,
+	// leaving interior nodes residually under Min. That is a balance
+	// violation only — reads/scans/inserts stay correct, and a later delete
+	// on the same path rebalances lazily.
+	for cur != nil {
+		leaf := isLeaf(cur.data[:])
+		minKeys := MinLeafPairs
+		if !leaf {
+			minKeys = MinInternalKeys
+		}
+		if len(held.frames) == 0 {
+			// held empty ⇒ cur is the root (the only node that may be under
+			// Min with no parent). An internal root reduced to one child
+			// shrinks; a leaf root may stay empty.
+			if !leaf && nodeCount(cur.data[:]) == 0 {
+				newRoot := internalChild(cur.data[:], 0)
+				oldPID := cur.pageID
+				t.meta.rootPageID = newRoot
+				t.meta.height--
+				t.release(cur, true)
+				cur = nil
+				if err := t.freePage(oldPID); err != nil {
+					return found, err
+				}
+			} else {
+				t.release(cur, true)
+				cur = nil
+			}
+			break
+		}
+		// cur is no longer underflowed (e.g. post-merge parent that stayed
+		// >= Min): nothing left to fix.
+		if int(nodeCount(cur.data[:])) >= minKeys {
+			t.release(cur, true)
+			cur = nil
+			break
+		}
+
+		top := len(held.frames) - 1
+		parent = held.frames[top]
+		ci := held.idxs[top]
+		held.frames, held.idxs = held.frames[:top], held.idxs[:top]
+		pn := int(nodeCount(parent.data[:]))
+
+		if pn == 0 {
+			// Degenerate single-child parent (possible via residually
+			// underfull interior nodes): no sibling exists to borrow from
+			// or merge into — release cur and keep climbing with the
+			// parent as the node to fix.
+			t.release(cur, true)
+			cur = parent
+			parent = nil
+			continue
+		}
+
+		if ci < pn {
+			// Right sibling exists: latch order left→right is respected.
+			rPID := internalChild(parent.data[:], ci+1)
+			sib, err = t.fetchRetry(rPID)
+			if err != nil {
+				return found, err
+			}
+			sib.latch.Lock()
+			if int(nodeCount(sib.data[:])) > minKeys {
+				// Borrow one entry from the right sibling.
+				if leaf {
+					leafBorrowFromRight(cur.data[:], sib.data[:])
+					internalSetKey(parent.data[:], ci, leafKey(sib.data[:], 0))
+				} else {
+					sep := internalKey(parent.data[:], ci)
+					newSep := internalBorrowFromRight(cur.data[:], sib.data[:], sep)
+					internalSetKey(parent.data[:], ci, newSep)
+				}
+				t.release(sib, true)
+				sib = nil
+				t.release(cur, true)
+				cur = nil
+				t.release(parent, true)
+				parent = nil
+				break
+			}
+			// Merge right into cur.
+			if leaf {
+				leafMergeInto(cur.data[:], sib.data[:])
+				leafSetNext(cur.data[:], leafNext(sib.data[:]))
+			} else {
+				internalMergeInto(cur.data[:], sib.data[:], internalKey(parent.data[:], ci))
+			}
+			internalRemoveKeyAt(parent.data[:], ci)
+			sibPID := sib.pageID
+			t.release(sib, true)
+			sib = nil
+			t.release(cur, true)
+			cur = nil
+			if err := t.freePage(sibPID); err != nil {
+				return found, err
+			}
+			// Parent lost a child — it may underflow; continue upward.
+			cur = parent
+			parent = nil
+			continue
+		}
+
+		// ci == pn: cur is the rightmost child — only the left sibling exists.
+		lPID := internalChild(parent.data[:], ci-1)
+		sib, err = t.fetchRetry(lPID)
+		if err != nil {
+			return found, err
+		}
+		if !sib.latch.TryLock() {
+			// Latching a left sibling while holding nodes to its right can
+			// deadlock against a scan's left→right coupling — restart.
+			// CRITICAL: sib is pinned but NOT latched here — unpin only,
+			// never Unlock (that would steal another holder's latch or panic).
+			t.pool.unpin(sib, false)
+			sib = nil
+			return found, errRestart
+		}
+		if int(nodeCount(sib.data[:])) > minKeys {
+			// Borrow one entry from the left sibling.
+			if leaf {
+				leafBorrowFromLeft(cur.data[:], sib.data[:])
+				internalSetKey(parent.data[:], ci-1, leafKey(cur.data[:], 0))
+			} else {
+				sep := internalKey(parent.data[:], ci-1)
+				newSep := internalBorrowFromLeft(cur.data[:], sib.data[:], sep)
+				internalSetKey(parent.data[:], ci-1, newSep)
+			}
+			t.release(sib, true)
+			sib = nil
+			t.release(cur, true)
+			cur = nil
+			t.release(parent, true)
+			parent = nil
+			break
+		}
+		// Merge cur into the left sibling.
+		if leaf {
+			leafMergeInto(sib.data[:], cur.data[:])
+			leafSetNext(sib.data[:], leafNext(cur.data[:]))
+		} else {
+			internalMergeInto(sib.data[:], cur.data[:], internalKey(parent.data[:], ci-1))
+		}
+		internalRemoveKeyAt(parent.data[:], ci-1)
+		curPID := cur.pageID
+		t.release(sib, true)
+		sib = nil
+		t.release(cur, true)
+		cur = nil
+		if err := t.freePage(curPID); err != nil {
+			return found, err
+		}
+		cur = parent
+		parent = nil
+	}
+
+	// Success tail: any frames still tracked are unmodified ancestors.
+	t.releaseHeld(&held)
+	if rootHeld {
+		t.rootMu.Unlock()
+		rootHeld = false
+	}
+	return found, nil
+}
+
+// RangeScan returns all pairs with start <= key <= end, in ascending key
+// order. An empty range (start > end) returns an empty slice.
+func (t *Tree) RangeScan(start, end int64) ([]Pair, error) {
+	if t.closed {
+		return nil, ErrClosed
+	}
+	if start > end {
+		return []Pair{}, nil
+	}
+	t.acquireOp()
+	defer t.releaseOp()
+	var out []Pair
+	err := retryOp(func() error {
+		var e error
+		out, e = t.rangeScan(start, end)
+		return e
+	})
+	return out, err
+}
+
+func (t *Tree) rangeScan(start, end int64) ([]Pair, error) {
+	t.rootMu.RLock()
+	f, err := t.pool.fetch(t.meta.rootPageID)
+	if err != nil {
+		t.rootMu.RUnlock()
+		return nil, err
+	}
+	f.latch.RLock()
+	t.rootMu.RUnlock()
+
+	for !isLeaf(f.data[:]) {
+		ci := internalFindChildIdx(f.data[:], start)
+		cf, err := t.pool.fetch(internalChild(f.data[:], ci))
+		if err != nil {
+			f.latch.RUnlock()
+			t.pool.unpin(f, false)
+			return nil, err
+		}
+		cf.latch.RLock()
+		f.latch.RUnlock()
+		t.pool.unpin(f, false)
+		f = cf
+	}
+
+	var out []Pair
+	for {
+		n := int(nodeCount(f.data[:]))
+		pos, _ := leafFindPos(f.data[:], start)
+		done := false
+		for i := pos; i < n; i++ {
+			k := leafKey(f.data[:], i)
+			if k > end {
+				done = true
+				break
+			}
+			out = append(out, Pair{k, leafVal(f.data[:], i)})
+		}
+		if done {
+			break
+		}
+		next := leafNext(f.data[:])
+		if next == nilPageID {
+			break
+		}
+		// Horizontal crab: latch the next leaf before releasing this one so
+		// a concurrent split can never make us skip a moved key.
+		nf, err := t.pool.fetch(next)
+		if err != nil {
+			f.latch.RUnlock()
+			t.pool.unpin(f, false)
+			return out, err
+		}
+		nf.latch.RLock()
+		f.latch.RUnlock()
+		t.pool.unpin(f, false)
+		f = nf
+		start = math.MinInt64 // subsequent leaves: take everything
+	}
+	f.latch.RUnlock()
+	t.pool.unpin(f, false)
+	return out, nil
 }
