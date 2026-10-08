@@ -1,0 +1,4 @@
+*.db
+*.db-journal
+.serena/
+.devin/config.local.json
