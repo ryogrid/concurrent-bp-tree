@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>並行 B+木オンディスク KVS — アルゴリズムとコードの対応</title>
+<style>
+:root {
+  --bg: #0f1419; --panel: #1a222c; --panel2: #222d3a; --fg: #dbe4ee;
+  --muted: #8fa3b8; --accent: #4fc1ff; --leaf: #3fb97f; --internal: #f0a45d;
+  --meta: #b78cf0; --warn: #ff6b6b; --lock-w: #ff6b6b; --lock-r: #4fc1ff;
+  --line: #33475e; --hl: #ffe08a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; display: flex; background: var(--bg); color: var(--fg);
+  font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif;
+  line-height: 1.65; }
+nav { position: sticky; top: 0; height: 100vh; width: 230px; flex: 0 0 230px;
+  background: var(--panel); padding: 20px 14px; overflow-y: auto;
+  border-right: 1px solid var(--line); }
+nav h1 { font-size: 15px; margin: 0 0 14px; color: var(--accent); }
+nav a { display: block; color: var(--muted); text-decoration: none;
+  font-size: 13px; padding: 5px 8px; border-radius: 6px; }
+nav a:hover { background: var(--panel2); color: var(--fg); }
+main { flex: 1; max-width: 1180px; padding: 24px 32px 120px; }
+section { margin-bottom: 56px; }
+h2 { color: var(--accent); border-bottom: 1px solid var(--line);
+  padding-bottom: 6px; font-size: 20px; }
+h3 { color: var(--hl); font-size: 15px; margin: 18px 0 6px; }
+p, li { font-size: 14px; }
+code, pre { font-family: "SF Mono", "Consolas", "Menlo", monospace; }
+code { background: var(--panel2); padding: 1px 5px; border-radius: 4px;
+  font-size: 12.5px; color: #ffd479; }
+table { border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+th, td { border: 1px solid var(--line); padding: 5px 12px; }
+th { background: var(--panel2); }
+
+.anim { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px; margin: 14px 0; }
+.anim svg { width: 100%; height: auto; display: block;
+  background: #101720; border-radius: 8px; }
+.controls { display: flex; align-items: center; gap: 10px; margin: 10px 0 6px; }
+.controls button { background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 14px;
+  font-size: 15px; cursor: pointer; }
+.controls button:hover { border-color: var(--accent); }
+.stepno { color: var(--muted); font-size: 13px; min-width: 70px; }
+.caption { font-size: 14px; min-height: 3.2em; margin: 4px 2px 10px; }
+.codepanel { background: #0b0f14; border: 1px solid var(--line);
+  border-radius: 8px; overflow-x: auto; }
+.codepanel .file { font-size: 12px; color: var(--muted); padding: 6px 10px;
+  border-bottom: 1px solid var(--line); }
+.codepanel pre { margin: 0; padding: 8px 0; font-size: 12px; }
+.codepanel .ln { display: block; padding: 0 12px; white-space: pre; }
+.codepanel .ln .no { display: inline-block; width: 3em; color: #56677a;
+  text-align: right; margin-right: 12px; user-select: none; }
+.codepanel .ln.hl { background: rgba(255, 224, 138, 0.16); }
+.codepanel .ln.hl .no { color: var(--hl); }
+
+/* SVG element classes */
+svg text { font-family: "SF Mono", "Consolas", monospace; }
+.nodebox { fill: var(--panel2); stroke: var(--line); stroke-width: 1.5;
+  rx: 8; }
+.nodebox.leaf { stroke: var(--leaf); }
+.nodebox.internal { stroke: var(--internal); }
+.nodebox.meta { stroke: var(--meta); }
+.nodebox.visited { fill: #2c4a63; stroke: var(--accent); }
+.nodebox.target { stroke: var(--hl); stroke-width: 2.5; }
+.nodebox.freed { stroke: var(--warn); stroke-dasharray: 5 4; opacity: .55; }
+.cell { fill: #152030; stroke: var(--line); stroke-width: 1; }
+.cell.hot { fill: #4a3c14; stroke: var(--hl); }
+.cell.moved { fill: #143a2c; stroke: var(--leaf); }
+.keytxt { fill: var(--fg); font-size: 11px; }
+.lbl { fill: var(--muted); font-size: 10.5px; }
+.cap { fill: var(--fg); font-size: 12px; }
+.edge { stroke: var(--line); stroke-width: 1.5; }
+.edge.hot { stroke: var(--accent); stroke-width: 2; }
+.arrow { stroke: var(--accent); stroke-width: 2; fill: none;
+  marker-end: url(#ah); }
+.arrow.leafnext { stroke: var(--leaf); stroke-dasharray: 4 3;
+  marker-end: url(#ahg); }
+.arrow.warn { stroke: var(--warn); marker-end: url(#ahr); }
+.lockW { fill: var(--lock-w); font-size: 10px; font-weight: bold; }
+.lockR { fill: var(--lock-r); font-size: 10px; font-weight: bold; }
+.lockbadge { fill: none; }
+.fade { opacity: .35; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>並行 B+木 KVS 解説</h1>
+  <a href="#overview">0. 概要</a>
+  <a href="#filefmt">1. ファイルフォーマット</a>
+  <a href="#node">2. ノード構造</a>
+  <a href="#get">3. Get: 探索</a>
+  <a href="#put">4. Put とスプリット</a>
+  <a href="#delete">5. Delete とマージ</a>
+  <a href="#latch">6. ラッチクラビング</a>
+  <a href="#buffer">7. バッファプール</a>
+  <a href="#scan">8. RangeScan</a>
+</nav>
+<main>
+
+<section id="overview">
+<h2>0. 概要</h2>
+<p><code>github.com/ryogrid/concurrent-bp-tree-tutrial/bptree</code> は、
+古典的 B+ 木を単一ファイルに永続化する Go の key-value ストア。key / value は
+int64 固定、ページサイズ 8KiB、WAL なし。並行性は<b>ノード単位のラッチ
+(読み書きロック) + ラッチクラビング</b>で実現し、木全体をロックしない。</p>
+<table>
+<tr><th>パラメータ</th><th>値</th><th>定義</th></tr>
+<tr><td>ページサイズ</td><td>8,192 B</td><td><code>PageSize</code></td></tr>
+<tr><td>バッファプール</td><td>256 フレーム</td><td><code>BufferPoolFrames</code></td></tr>
+<tr><td>最大高さ</td><td>8</td><td><code>MaxTreeHeight</code></td></tr>
+<tr><td>リーフ容量</td><td>最大 510 / 最小 255 pair</td><td><code>MaxLeafPairs</code>/<code>MinLeafPairs</code></td></tr>
+<tr><td>内部ノード容量</td><td>最大 510 key / 511 子</td><td><code>MaxInternalKeys</code>/<code>MinInternalKeys</code></td></tr>
+<tr><td>同時操作数上限</td><td>20</td><td><code>opSlots</code> セマフォ</td></tr>
+</table>
+<p>API は <code>Put / Get / Delete / RangeScan(start,end)</code>。
+全操作はアトミックに見え（対象リーフのラッチを保持したまま変更）、
+木の接続関係はすべて<b>ページID</b>でファイルに永続化される ——
+メモリ上にポインタの木は存在しない。</p>
+</section>
+
+<section id="filefmt">
+<h2>1. ファイルフォーマット</h2>
+<p>DB ファイルは 8KiB ページの配列。先頭ページはメタデータ専用で、
+それ以降がノードページまたはフリーリストページ。<code>DiskManager</code>
+(<code>disk.go</code>) が固定サイズの読み書きとファイル伸長を担う。</p>
+<div class="anim" data-anim="filefmt"></div>
+</section>
+
+<section id="node">
+<h2>2. ノード構造</h2>
+<p>すべてのページを int64 スロット (1024個/ページ) として扱う。
+リーフは (key,value) 対を昇順に持ち <code>nextLeafPID</code> で右兄弟へ繋ぐ。
+内部ノードは key と子ページIDを交互に持ち、<code>key[i]</code> は
+「<code>child[i+1]</code> 側の最小キー」を表す古典的セパレータ。</p>
+<div class="anim" data-anim="node"></div>
+</section>
+
+<section id="get">
+<h2>3. Get: ルート→リーフ探索</h2>
+<p><code>rootMu.RLock</code> でルートページIDを読み、ルートを R ラッチ。
+あとは<b>子をラッチしてから親を外す</b> (クラビング) で葉まで降り、
+葉内を二分探索。ロックするのは通路上のノードだけ。</p>
+<div class="anim" data-anim="get"></div>
+</section>
+
+<section id="put">
+<h2>4. Put とスプリット</h2>
+<p>書き込みは W ラッチで下降。<b>安全</b>な子（分裂しない = count &lt; Max）なら
+祖先のラッチを即解放 —— これがクラビングの核心。葉が満杯なら
+511 エントリのスクラッチ配列で 255/256 に分割し、右ノードを新規ページに
+割当ててから分離キーを親へ伝播。親も満杯なら連鎖分裂し、
+ルートまで達すれば新ルートで高さ+1。</p>
+<div class="anim" data-anim="put"></div>
+</section>
+
+<section id="delete">
+<h2>5. Delete: 借用とマージ</h2>
+<p>葉から削除して count &lt; Min になれば兄弟と調整。右兄弟が余裕
+(&gt;Min) あれば最小要素を借用して親の分離キーを更新。無ければ
+<b>右を自分に吸収</b>するか、自分が右端なら<b>自分を左兄弟に吸収</b>。
+左兄弟の W ラッチだけはロック順序に逆らうので <code>TryLock</code> +
+操作全体の再試行でデッドロックを回避する。ルートが 0 キー内部ノードに
+なれば高さ-1。</p>
+<div class="anim" data-anim="delete"></div>
+</section>
+
+<section id="latch">
+<h2>6. ノード単位の排他制御: ラッチクラビング</h2>
+<p>ロック順序は「親→子、兄弟は左→右」。読みは R ラッチをカップリング
+（次を取ってから前を放す）。書きは W ラッチで降り、<b>安全な子が
+見つかった時点で祖先を全部解放</b>するので、実際に同時保持するのは
+「まだ分裂/併合し得る部分木」のみ。スキャンの左→右カップリングと
+左兄弟ラッチ取得が衝突し得るため、そこだけ <code>TryLock</code>+再試行。
+<code>opSlots</code> セマフォが同時操作数を 20 に絞り、
+256 フレーム枯渇による待ちデッドロックを構造的に防ぐ。</p>
+<div class="anim" data-anim="latch"></div>
+</section>
+
+<section id="buffer">
+<h2>7. バッファプール</h2>
+<p>256 フレームの固定配列 + <code>pageID→frame</code> テーブル。
+<code>fetch</code> はヒットなら pin++ して即返却。ミス時は
+pin=0 のフレームから LRU (最小 <code>lastUsed</code>) を選び、
+dirty なら先にディスクへ書き戻してから読込。全フレームが pin 中なら
+<code>ErrNoFreeFrame</code> で呼び出し側が再試行する。
+不変条件は <b>「ラッチを持つフレームは必ず pin 済み」
+「Unpin はラッチ解放の後」</b>。</p>
+<div class="anim" data-anim="buffer"></div>
+</section>
+
+<section id="scan">
+<h2>8. RangeScan: 葉の水平走査</h2>
+<p>降下は Get と同じ R クラビング。開始葉で <code>start</code> 以上の
+最初の位置を二分探索し、<code>k &gt; end</code> またはチェーン終端まで
+順に収集。次葉へは<b>R ラッチをカップリング</b>（次を R してから現在を
+解放）するので、走査中の分割・併合にキーを取りこぼされない。
+各葉の到達時点での内容を返すカーソル一貫性で、スナップショットではない。</p>
+<div class="anim" data-anim="scan"></div>
+</section>
+
+</main>
+
+<script>
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+
+// ---- tiny SVG shape DSL -------------------------------------------------
+const R=(x,y,w,h,c)=>({k:"rect",x,y,w,h,c});
+const T=(x,y,s,c)=>({k:"text",x,y,s,c});
+const L=(x1,y1,x2,y2,c)=>({k:"line",x1,y1,x2,y2,c});
+const A=(x1,y1,x2,y2,c)=>({k:"arrow",x1,y1,x2,y2,c:c||"arrow"});
+const P=(d,c)=>({k:"path",d,c});
+
+// node widgets: 24px per int64 cell
+const CW=30, NH=30;
+function leafNode(x,y,pid,pairs,opts={}){
+  const n=pairs.length, w=CW*(n+1)+52;
+  const s=[R(x,y,w,NH+14,"nodebox leaf"+(opts.cls?" "+opts.cls:""))];
+  s.push(T(x+6,y-5,"leaf p"+pid,"lbl"));
+  pairs.forEach((kv,i)=>{
+    s.push(R(x+6+i*CW,y+8,CW-3,NH-8,"cell"+(opts.hot===i?" hot":opts.moved&&opts.moved.includes(i)?" moved":"")));
+    s.push(T(x+9+i*CW,y+26,kv[0]+"","keytxt"));
+  });
+  // next link stub cell
+  s.push(R(x+6+n*CW,y+8,CW-3,NH-8,"cell"));
+  s.push(T(x+8+n*CW,y+26,"→","lbl"));
+  if(opts.lock) s.push(T(x+w+4,y+24,opts.lock,opts.lock==="W"?"lockW":"lockR"));
+  return s;
+}
+function internalNode(x,y,pid,keys,opts={}){
+  const n=keys.length, w=CW*n+58;
+  const s=[R(x,y,w,NH+14,"nodebox internal"+(opts.cls?" "+opts.cls:""))];
+  s.push(T(x+6,y-5,"int p"+pid,"lbl"));
+  keys.forEach((k,i)=>{
+    s.push(R(x+6+i*CW,y+8,CW-3,NH-8,"cell"+(opts.hot===i?" hot":"")));
+    s.push(T(x+9+i*CW,y+26,k+"","keytxt"));
+  });
+  if(opts.lock) s.push(T(x+w+4,y+24,opts.lock,opts.lock==="W"?"lockW":"lockR"));
+  return s;
+}
+const ED=(x1,y1,x2,y2,c)=>L(x1,y1,x2,y2,"edge"+(c?" "+c:""));
+
+// ---- code panel ---------------------------------------------------------
+function codePanel(file, lines, hl){
+  const htl = new Set(hl||[]);
+  let out = `<div class="file">${file}</div><pre>`;
+  lines.forEach((ln,i)=>{
+    out += `<span class="ln${htl.has(i+1)?" hl":""}"><span class="no">${i+1}</span>${ln.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</span>`;
+  });
+  return out + "</pre>";
+}
+
+// ---- animation engine ---------------------------------------------------
+function mountAnim(el, steps, code){
+  const svg = document.createElementNS(NS,"svg");
+  svg.setAttribute("viewBox","0 0 960 340");
+  svg.innerHTML = `<defs><marker id="ah" markerWidth="7" markerHeight="7"
+    refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z"
+    fill="#4fc1ff"/></marker>
+    <marker id="ahg" markerWidth="7" markerHeight="7" refX="6" refY="3.5"
+    orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#3fb97f"/></marker>
+    <marker id="ahr" markerWidth="7" markerHeight="7" refX="6" refY="3.5"
+    orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#ff6b6b"/></marker>
+    </defs><g id="cv"></g>`;
+  const ctrl = document.createElement("div"); ctrl.className="controls";
+  const cap = document.createElement("div"); cap.className="caption";
+  const cp = document.createElement("div"); cp.className="codepanel";
+  const prev=document.createElement("button"); prev.textContent="◀";
+  const next=document.createElement("button"); next.textContent="▶";
+  const auto=document.createElement("button"); auto.textContent="▶ 自動再生";
+  const no=document.createElement("span"); no.className="stepno";
+  ctrl.append(prev,next,auto,no);
+  el.append(svg,ctrl,cap,cp);
+  const cv = svg.querySelector("#cv");
+  let i=0, timer=null;
+  function draw(){
+    cv.innerHTML="";
+    for(const sh of steps[i].svg){
+      let e;
+      if(sh.k==="rect"){e=document.createElementNS(NS,"rect");
+        e.setAttribute("x",sh.x);e.setAttribute("y",sh.y);
+        e.setAttribute("width",sh.w);e.setAttribute("height",sh.h);
+        e.setAttribute("rx",7);e.setAttribute("class",sh.c);}
+      else if(sh.k==="text"){e=document.createElementNS(NS,"text");
+        e.setAttribute("x",sh.x);e.setAttribute("y",sh.y);
+        e.setAttribute("class",sh.c);e.textContent=sh.s;}
+      else if(sh.k==="line"){e=document.createElementNS(NS,"line");
+        e.setAttribute("x1",sh.x1);e.setAttribute("y1",sh.y1);
+        e.setAttribute("x2",sh.x2);e.setAttribute("y2",sh.y2);
+        e.setAttribute("class",sh.c);}
+      else if(sh.k==="arrow"){e=document.createElementNS(NS,"line");
+        e.setAttribute("x1",sh.x1);e.setAttribute("y1",sh.y1);
+        e.setAttribute("x2",sh.x2);e.setAttribute("y2",sh.y2);
+        e.setAttribute("class",sh.c);
+        if(sh.c.includes("leafnext"))e.setAttribute("marker-end","url(#ahg)");
+        else if(sh.c.includes("warn"))e.setAttribute("marker-end","url(#ahr)");}
+      else {e=document.createElementNS(NS,"path");
+        e.setAttribute("d",sh.d);e.setAttribute("class",sh.c);}
+      cv.appendChild(e);
+    }
+    cap.innerHTML=`<b>Step ${i+1}/${steps.length}</b> — ${steps[i].cap}`;
+    no.textContent=`${i+1} / ${steps.length}`;
+    cp.innerHTML=codePanel(steps[i].file||code.file,
+      steps[i].lines||code.lines, steps[i].hl);
+  }
+  prev.onclick=()=>{i=(i-1+steps.length)%steps.length;draw();};
+  next.onclick=()=>{i=(i+1)%steps.length;draw();};
+  auto.onclick=()=>{
+    if(timer){clearInterval(timer);timer=null;auto.textContent="▶ 自動再生";}
+    else{auto.textContent="⏸ 停止";timer=setInterval(()=>{
+      i=(i+1)%steps.length;draw();},1600);}
+  };
+  draw();
+}
+
+// =========================================================================
+// Section data
+// =========================================================================
+const G={
+// ---- 1. file format -----------------------------------------------------
+filefmt:{code:{file:"bptree/const.go · meta.go",lines:[
+`const PageSize = 8192`,
+`const pageSlots = PageSize / 8          // 1024`,
+`const metaPageID PageID = 0             // page 0 = meta`,
+`// meta slots: magic, version, rootPageID,`,
+`//   height, freeListHead, nextPageID`,
+`func (d *diskManager) readPage(pid PageID, buf *[PageSize]byte) error {`,
+`\t_, err := d.f.ReadAt(buf[:], int64(pid)*PageSize)`,
+`\treturn err`,
+`}`,
+`// writePage は同じオフセット計算で WriteAt。`,
+`// 新規割当は freelist 優先; 空なら nextPageID++`,
+`// (WriteAt による暗黙のファイル伸長)`,
+]},steps:[
+{cap:"DBファイル = 8KiB ページの連番配列。ページ番号 (PageID) がそのままファイルオフセット <code>pid*8192</code> になる。",
+ file:undefined,hl:[1,7],
+ svg:[T(20,30,"file.db","cap"),
+   R(30,50,120,90,"nodebox meta"),T(55,100,"p0: meta","cap"),
+   R(170,50,120,90,"nodebox leaf"),T(195,100,"p1","cap"),
+   R(310,50,120,90,"nodebox internal"),T(335,100,"p2","cap"),
+   R(450,50,120,90,"nodebox"),T(475,100,"p3 (free)","cap"),
+   T(590,100,"… 伸長で後ろに追加","lbl"),
+   A(745,95,845,95),R(850,50,80,90,"nodebox"),T(865,100,"pN","cap"),
+   T(30,180,"offset = pid × 8192","lbl")]},
+{cap:"ページ0はメタページ: マジック・バージョン・<b>ルートのPageID</b>・木の高さ・フリーリスト先頭・次の割当PageID。ここだけが木の「入口」。",
+ hl:[3,4,5],
+ svg:[R(60,60,840,110,"nodebox meta"),T(80,55,"page 0 (metaPageID)","lbl"),
+   ...["magic","version","rootPID","height","freeHead","nextPID"].map(
+     (s,i)=>[R(80+i*135,70,125,40,"cell"),T(90+i*135,95,s,"keytxt")]).flat(),
+   T(80,140,"Open: decodeMeta が magic/version と範囲を検証","cap"),
+   T(80,160,"Close: writeMeta → flushAll で永続化","cap")]},
+{cap:"残りのページはノードかフリーリスト。ノード間の接続は<b>PageID 値</b> —— メモリポインタは一切使わない。空きページは slot0 が次の空きを指す単方向リスト。",
+ hl:[6,7,8,9,10],
+ svg:[R(60,60,150,90,"nodebox internal"),T(85,110,"内部ノード","cap"),
+   T(120,160,"child[2]=p5","lbl"),A(135,150,320,90),
+   R(320,60,150,90,"nodebox leaf"),T(345,110,"リーフ","cap"),
+   A(470,105,540,105,"arrow leafnext"),T(478,95,"nextLeaf","lbl"),
+   R(540,60,150,90,"nodebox leaf"),T(565,110,"右兄弟","cap"),
+   R(740,60,150,90,"nodebox freed"),T(765,110,"free page","cap"),
+   T(750,160,"slot0 → 次の空き","lbl")]}]},
+
+// ---- 2. node layout -----------------------------------------------------
+node:{code:{file:"bptree/node.go · const.go",lines:[
+`// leaf: slot0=type(2), slot1=nPairs,`,
+`//   slot2=nextLeafPID,`,
+`//   key[i]@3+2i, value[i]@4+2i`,
+`// internal: slot0=type(1), slot1=nKeys,`,
+`//   child[i]@2+2i, key[i]@3+2i`,
+`const MaxLeafPairs    = (pageSlots-3)/2 // 510`,
+`const MinLeafPairs    = MaxLeafPairs/2  // 255`,
+`const MaxInternalKeys = (pageSlots-4)/2 // 510`,
+`const MinInternalKeys = MaxInternalKeys/2`,
+]},steps:[
+{cap:"リーフページ: 先頭3スロットがヘッダ、以降 key/value が交互に並ぶ。キーは昇順ソート済み —— <code>leafFindPos</code> が二分探索できる理由。",
+ hl:[1,2,3],
+ svg:[R(40,80,880,60,"nodebox leaf"),T(48,72,"leaf page = int64 slot[]","lbl"),
+   ...["type=2","n","next","k0","v0","k1","v1","k2","v2","…"].flatMap(
+     (s,i)=>[R(50+i*90,86,85,40,"cell"),T(56+i*90,112,s,"keytxt")]),
+   T(50,170,"slot: 0      1     2     3   4   5   6   …","lbl"),
+   T(50,220,"nextLeafPID → 右兄弟リーフ (水平リンク)","cap"),
+   A(300,95,340,95,"arrow leafnext")]},
+{cap:"内部ノード: <code>child[i]</code> と <code>key[i]</code> が交互。key[i] は「child[i] の右側の最小キー」。探索は key[i] ≤ 検索キー となる最大 i の右の child を辿る。",
+ hl:[4,5],
+ svg:[R(40,80,880,60,"nodebox internal"),T(48,72,"internal page","lbl"),
+   ...["type=1","n","c0","k0","c1","k1","c2","k2","c3","…"].flatMap(
+     (s,i)=>[R(50+i*90,86,85,40,"cell"),T(56+i*90,112,s,"keytxt")]),
+   T(50,190,"key[i] = child[i+1] 部分木の最小キー","cap"),
+   T(50,230,"例: search(25) → k0=10≤25, k1=30>25 → c1 へ","lbl"),
+   P("M200 200 q30 30 60 0","arrow")]},
+{cap:"高さ3の例: ルート(内部)→内部→リーフ。リーフだけが実データ (k:v) を持ち、内部ノードは道標のみ。ファンアウト511なので高さ3で約1.3億キー。",
+ hl:[6,7,8,9],
+ svg:[...internalNode(400,40,1,[32,62],{cls:"internal"}),
+   ED(430,80,190,120),ED(460,80,460,120),ED(500,80,730,120),
+   ...internalNode(120,120,2,[12,22],{}),
+   ...internalNode(400,120,3,[42,52],{}),
+   ...internalNode(680,120,4,[72,82],{}),
+   ED(150,160,60,200),ED(180,160,150,200),ED(210,160,240,200),
+   ED(430,160,340,200),ED(460,160,430,200),ED(490,160,520,200),
+   ED(710,160,620,200),ED(740,160,710,200),ED(770,160,800,200),
+   ...leafNode(20,200,5,[[3],[7],[9]],{}),
+   ...leafNode(110,200,6,[[12],[15],[18]],{}),
+   ...leafNode(200,200,7,[[22],[25],[28]],{}),
+   ...leafNode(300,200,8,[[32],[35],[38]],{}),
+   ...leafNode(390,200,9,[[42],[45],[48]],{}),
+   ...leafNode(480,200,10,[[52],[55],[58]],{}),
+   ...leafNode(580,200,11,[[62],[65],[68]],{}),
+   ...leafNode(670,200,12,[[72],[75],[78]],{}),
+   ...leafNode(760,200,13,[[82],[85],[88]],{}),
+   A(140,225,110,225,"arrow leafnext"),A(230,225,200,225,"arrow leafnext"),
+   T(300,300,"リーフは nextLeafPID で左→右に連結 (RangeScan 用)","cap")]}]},
+
+// ---- 3. Get -------------------------------------------------------------
+get:{code:{file:"bptree/tree.go — get()（要約）",lines:[
+`t.rootMu.RLock()                    // rootPageID を保護`,
+`f, _ := t.pool.fetch(t.meta.rootPageID)`,
+`f.latch.RLock()                     // root を R ラッチ`,
+`t.rootMu.RUnlock()                  // 以後はページラッチのみ`,
+`for !isLeaf(f.data[:]) {            // クラビング下降`,
+`\tci := internalFindChildIdx(f.data[:], key)`,
+`\tcf, _ := t.pool.fetch(internalChild(f.data[:], ci))`,
+`\tcf.latch.RLock()                  // 子を先に R`,
+`\tf.latch.RUnlock(); t.pool.unpin(f, false) // 親を外す`,
+`\tf = cf`,
+`}`,
+`pos, found := leafFindPos(f.data[:], key) // 葉内二分探索`,
+]},steps:[
+{cap:"<code>Get(25)</code>: rootMu.RLock でルート p1 を守りつつ fetch + R ラッチ。ここだけ rootMu が必要 —— 以降はページIDで辿る。",
+ hl:[1,2,3,4],
+ svg:[T(30,30,"key = 25 を探索","cap"),
+   ...internalNode(400,40,1,[32,62],{cls:"visited",lock:"R"}),
+   ...internalNode(120,120,2,[12,22],{}),
+   ...internalNode(400,120,3,[42,52],{}),
+   ...internalNode(680,120,4,[72,82],{}),
+   ED(430,80,190,120),ED(460,80,460,120),ED(500,80,730,120)]},
+{cap:"内部ノード p1 で二分探索: 25 < k0=32 → <code>child[0]</code> = p2 を選択。子を fetch して R ラッチして<b>から</b>親を解放 (カップリング)。",
+ hl:[5,6,7,8,9],
+ svg:[T(30,30,"25 < 32 → child[0] = p2","cap"),
+   ...internalNode(400,40,1,[32,62],{cls:"visited"}),
+   ...internalNode(120,120,2,[12,22],{cls:"visited",lock:"R"}),
+   ...internalNode(400,120,3,[42,52],{}),
+   ...internalNode(680,120,4,[72,82],{}),
+   ED(430,80,190,120,"hot"),ED(460,80,460,120),ED(500,80,730,120)]},
+{cap:"p2 でも同様に: 25 ≥ 22 → <code>child[2]</code> = p7 へ。一度に保持するのは最大2レベルの R ラッチだけ。",
+ hl:[5,6,7,8,9,10],
+ svg:[T(30,30,"25 ≥ 22 → child[2] = p7","cap"),
+   ...internalNode(400,40,1,[32,62],{cls:"visited"}),
+   ...internalNode(120,120,2,[12,22],{cls:"visited"}),
+   ...internalNode(400,120,3,[42,52],{}),
+   ...internalNode(680,120,4,[72,82],{}),
+   ED(430,80,190,120),ED(460,80,460,120),ED(500,80,730,120),
+   ED(150,160,60,200),ED(180,160,150,200),ED(210,160,240,200,"hot"),
+   ...leafNode(20,200,5,[[3],[7],[9]],{}),
+   ...leafNode(110,200,6,[[12],[15],[18]],{}),
+   ...leafNode(200,200,7,[[22],[25],[28]],{cls:"visited",lock:"R"})]},
+{cap:"葉 p7 を <code>leafFindPos</code> で二分探索 → 位置1で 25 発見、値を返してラッチ解放→Unpin。同時に他の読み手も同じ経路を R で降りられる。",
+ hl:[11,12],
+ svg:[T(30,30,"p7 内で二分探索 → 25 発見","cap"),
+   ...internalNode(400,40,1,[32,62],{cls:"visited"}),
+   ...internalNode(120,120,2,[12,22],{cls:"visited"}),
+   ...internalNode(400,120,3,[42,52],{}),
+   ...internalNode(680,120,4,[72,82],{}),
+   ...leafNode(20,200,5,[[3],[7],[9]],{}),
+   ...leafNode(110,200,6,[[12],[15],[18]],{}),
+   ...leafNode(200,200,7,[[22],[25],[28]],{cls:"visited",hot:1,lock:"R"}),
+   T(200,270,"→ (25, v) を返す","cap")]}]},
+
+// ---- 4. Put / split ------------------------------------------------------
+put:{code:{file:"bptree/tree.go — put()（要約）",lines:[
+`t.rootMu.Lock()                       // root 変更を直列化`,
+`cur, _ := t.pool.fetch(t.meta.rootPageID); cur.latch.Lock()`,
+`if safeForInsert(cur.data[:]) { t.rootMu.Unlock() }`,
+`for !isLeaf(cur.data[:]) {            // W ラッチで下降`,
+`\tcf, _ := t.pool.fetch(child); cf.latch.Lock()`,
+`\tif safeForInsert(cf.data[:]) {     // 子が安全なら`,
+`\t\tt.releaseHeld(&held); t.release(cur,false) // 祖先全解放`,
+`\t} else { held.push(cur, ci) }      // 分裂の可能性 → 保持`,
+`\tcur = cf`,
+`}`,
+`// 葉が満杯: 511 エントリを scratch に組み 255/256 分割`,
+`sep := leafInsertSplit(cur, right, key, value)`,
+`leafSetNext(right, leafNext(cur)); leafSetNext(cur, rightPID)`,
+`// 分離キーを held の親へ上向きに伝播`,
+]},steps:[
+{cap:"Put は W ラッチで下降。各レベルで子が<b>安全</b> (count&lt;Max) か判定 —— 安全なら分裂がここで止まるので祖先のラッチは全部解放できる。",
+ hl:[4,5,6,7,9],
+ svg:[T(30,30,"Put(45)","cap"),
+   ...internalNode(400,40,1,[32,62],{lock:"W"}),
+   ...internalNode(120,120,2,[12,22],{}),
+   ...internalNode(400,120,3,[42,52],{cls:"visited",lock:"W"}),
+   ...internalNode(680,120,4,[72,82],{}),
+   ED(430,80,190,120),ED(460,80,460,120,"hot"),ED(500,80,730,120),
+   T(600,60,"p1 が安全 → rootMu を解放 (W ラッチは継続)","lbl"),
+   T(600,140,"p3 も安全なら p1 の W ラッチを手放す","lbl")]},
+{cap:"葉 p9 に空きがあれば順序を保って挿入して終了。変更範囲はこの葉だけ —— だから祖先を早く解放して並行性を稼ぐ。",
+ hl:[9,10],
+ svg:[T(30,30,"葉 p9 に空きあり","cap"),
+   ...leafNode(200,120,9,[[32],[35],[38]],{lock:"W"}),
+   A(340,135,390,135),
+   ...leafNode(400,120,9,[[32],[35],[38],[45]],{hot:3,lock:"W"})]},
+{cap:"葉が満杯 (510) の場合: 挿入後の 511 エントリをスクラッチ配列に構築して 255 / 256 に分割。右半分は新規ページへ —— ページに511個は載らないのでscratch必須。",
+ hl:[11,12],
+ svg:[T(30,30,"葉 p8 が満杯 → 分割","cap"),
+   ...leafNode(60,80,8,[["k1"],["…"],["k255"]],{lock:"W"}),
+   T(60,60,"255 エントリ残る","lbl"),
+   ...leafNode(400,80,9,[["k256"],["…"],["k511"]],{moved:[0,1,2]}),
+   T(400,60,"新規ページへ 256","lbl"),
+   A(300,95,390,95),
+   T(200,180,"scratch[511] に仮挿入してから 2 ページへ書き戻す","cap")]},
+{cap:"水平リンクを配線: <code>right.next = cur.next; cur.next = rightPID</code>。これで RangeScan が新葉を見逃さない。",
+ hl:[13],
+ svg:[T(30,30,"兄弟リンク更新","cap"),
+   ...leafNode(60,80,8,[["…"]],{lock:"W"}),
+   A(180,95,300,95,"arrow leafnext"),
+   ...leafNode(310,80,9,[["…"]],{}),
+   A(430,95,540,95,"arrow leafnext"),
+   ...leafNode(550,80,10,[["…"]],{}),
+   T(60,160,"p8.next = p9,  p9.next = 旧 p8.next (=p10)","lbl")]},
+{cap:"分離キー (=右葉の最小キー) を親へ挿入。親が満杯なら内部ノードも同様に分裂して更に上へ —— ルート到達なら新ルートを割当てて高さ+1。",
+ hl:[14],
+ svg:[T(30,30,"分離キー k256 を親 p2 へ","cap"),
+   ...internalNode(300,50,2,[["k256"]],{hot:0,lock:"W"}),
+   ED(330,95,160,140),ED(390,95,480,140),
+   ...leafNode(60,140,8,[["…"]],{}),
+   ...leafNode(400,140,9,[["…"]],{}),
+   T(300,200,"親も満杯 → internalInsertSplit で連鎖分裂","lbl"),
+   T(300,230,"ルート到達 → 新ルート + height++","lbl")]}]},
+
+// ---- 5. Delete -----------------------------------------------------------
+delete:{code:{file:"bptree/tree.go — delete()（要約）",lines:[
+`// 葉で削除し count < Min なら兄弟と調整`,
+`if ci < pn {                    // 右兄弟がある`,
+`\tsib, _ := t.fetchRetry(child[ci+1]); sib.latch.Lock()`,
+`\tif nodeCount(sib) > minKeys { // 借用`,
+`\t\tleafBorrowFromRight(cur, sib)`,
+`\t\tinternalSetKey(parent, ci, leafKey(sib,0))`,
+`\t} else {                      // 右を自分に吸収`,
+`\t\tleafMergeInto(cur, sib)`,
+`\t\tinternalRemoveKeyAt(parent, ci)`,
+`\t}`,
+`} else {                        // 右端 → 左兄弟`,
+`\tsib.latch.TryLock() || return errRestart // 全解放して再試行`,
+`\t... 左借用 or 自分を左に吸収 ...`,
+`}`,
+`// 親がアンダーフローしたら同じ処理を上へ伝播`,
+]},steps:[
+{cap:"Delete(45) を実行して葉 p9 が Min 未満に。親は下降時に保持した held スタックから取り出す (W ラッチ済み)。",
+ hl:[1,2,3],
+ svg:[T(30,30,"葉 p9 がアンダーフロー","cap"),
+   ...internalNode(300,50,2,[[254],[600]],{lock:"W"}),
+   ED(330,95,160,140),ED(390,95,420,140),ED(450,95,680,140),
+   ...leafNode(60,140,8,[["…"]],{}),
+   ...leafNode(300,140,9,[[254]],{cls:"target",lock:"W"}),
+   ...leafNode(560,140,10,[[600],[605],[610]],{lock:"W"}),
+   T(300,210,"count=254 < Min=255","cap")]},
+{cap:"右兄弟 p10 が Min+1 以上なら<b>借用</b>: 最小要素 (600) を p9 末尾へ移し、親の分離キーを p10 の<b>新しい</b>最小キー (605) に更新。",
+ hl:[4,5,6],
+ svg:[T(30,30,"右兄弟から借用","cap"),
+   ...internalNode(300,50,2,[[254],[605]],{hot:1,lock:"W"}),
+   ED(330,95,160,140),ED(390,95,420,140),ED(450,95,680,140),
+   ...leafNode(60,140,8,[["…"]],{}),
+   ...leafNode(300,140,9,[[254],[600]],{moved:[1],lock:"W"}),
+   ...leafNode(560,140,10,[[605],[610]],{lock:"W"}),
+   A(560,120,430,120,"arrow leafnext"),T(480,108,"600 移動","lbl")]},
+{cap:"右兄弟も Min なら<b>マージ</b>: p10 を p9 に吸収し、p9.next に旧 p10.next を引き継ぐ。親から分離キーと子ポインタを削除し p10 はフリーリストへ。",
+ hl:[7,8,9],
+ svg:[T(30,30,"右兄弟を吸収マージ","cap"),
+   ...internalNode(300,50,2,[[254]],{lock:"W"}),
+   ED(330,95,160,140),ED(390,95,420,140),
+   ...leafNode(60,140,8,[["…"]],{}),
+   ...leafNode(300,140,9,[[254],[600],[605]],{lock:"W"}),
+   ...leafNode(560,140,10,[[610]],{cls:"freed"}),
+   T(570,215,"→ freelist","lbl"),
+   A(430,165,555,165,"arrow leafnext"),T(430,150,"next 引継ぎ","lbl")]},
+{cap:"自分が右端のときは左兄弟に吸収される側になる。左ラッチはロック順序違反 (右を持って左を取る) なので <code>TryLock</code> —— 失敗したら全ラッチ解放して操作ごと再試行。",
+ hl:[11,12],
+ svg:[T(30,30,"右端ノード: 左兄弟へ TryLock","cap"),
+   ...internalNode(300,50,2,[[513]],{lock:"W"}),
+   ED(330,95,160,140),ED(390,95,560,140),
+   ...leafNode(60,140,8,[[500],[505]],{lock:"W"}),
+   ...leafNode(440,140,9,[[513]],{cls:"target",lock:"W"}),
+   T(60,120,"TryLock","lockW"),
+   P("M210 140 q120 -80 240 0","arrow warn"),
+   T(250,80,"失敗 → errRestart","cap")]},
+{cap:"親から子が消えて親が Min 未満になれば、同じ借用/マージを1レベル上で繰り返す。ルート内部ノードが 0 キー (子1つ) になれば高さ-1 で縮小。",
+ hl:[14],
+ svg:[T(30,30,"アンダーフロー伝播","cap"),
+   ...internalNode(400,50,1,[],{cls:"target",lock:"W"}),
+   ...internalNode(120,130,2,[[10],[20]],{}),
+   ...internalNode(680,130,3,[[90],[95]],{}),
+   ED(430,95,190,130),ED(460,95,700,130,"hot"),
+   T(400,230,"p1 count=0 & 子1つ → root = その子, height--","cap"),
+   A(480,80,660,140,"arrow warn")]}]},
+
+// ---- 6. latch crabbing ---------------------------------------------------
+latch:{code:{file:"bptree/tree.go — ロック規約（要約）",lines:[
+`// 順序: 親→子, 兄弟は左→右, rootMu→metaMu,`,
+`// ページラッチ保持中に metaMu 取得は可 (逆は禁止)。`,
+`// pool.mu は最内側。`,
+`// 読み: R カップリング (子をR→親を外す)`,
+`// 書き: W クラビング (安全な子で祖先解放)`,
+`// 例外: 左兄弟は TryLock、失敗→errRestart`,
+`// opSlots セマフォで同時操作 ≤ 20`,
+`//   → 1操作の最大 pin ≈ 高さ8+α ≪ 256`,  
+`//   → フレーム枯渇待ちデッドロックを排除`,
+]},steps:[
+{cap:"読み (Get/Scan) のカップリング: 子を R してから親を外すので、同時刻に持つ R ラッチは親子 2 つだけ。木の他部分は完全にフリー。",
+ hl:[3],
+ svg:[T(60,40,"G1: Get","cap"),
+   ...internalNode(120,60,1,[["k"]],{lock:"R"}),
+   ...internalNode(120,130,2,[["k"]],{}),
+   ...leafNode(120,200,3,[["…"]],{}),
+   ED(150,100,150,130),ED(150,170,150,200),
+   T(500,90,"時刻 t1: root+R","lbl"),
+   T(500,120,"t2: child R → root 解放","lbl"),
+   T(500,150,"t3: leaf R → child 解放","lbl")]},
+{cap:"書き (Put/Delete) のクラビング: 降りながら「この子が分裂/併合し得るか」を判定。安全な子に辿り着いた時点で祖先を一括解放 —— ホールド区間は危険な部分木だけ。",
+ hl:[4,6,7,8],
+ svg:[T(60,40,"G2: Put","cap"),
+   ...internalNode(80,60,4,[["k"]],{lock:"W"}),
+   ...internalNode(80,130,5,[["k"]],{lock:"W"}),
+   ...leafNode(80,200,6,[["…"]],{cls:"target",lock:"W"}),
+   ED(110,100,110,130),ED(110,170,110,200),
+   T(400,90,"p4: unsafe → 保持","lbl"),
+   T(400,120,"p5: unsafe → 保持","lbl"),
+   T(400,150,"p6 (leaf): ここで p4,p5 を処理に使用","lbl"),
+   T(400,200,"子が安全ならそこで全祖先解放","cap")]},
+{cap:"衝突シナリオ: Scan は左→右に R をカップリング。Delete の「自分を左兄弟に吸収」は右側を持ったまま左を取りに行く —— ブロッキング取得すれば巡回待ちに。だから <code>TryLock</code>。",
+ hl:[5],
+ svg:[T(60,40,"Scan: 左→右カップリング","cap"),
+   ...leafNode(60,80,7,[["a"]],{lock:"R"}),
+   A(180,95,250,95,"arrow leafnext"),
+   ...leafNode(260,80,8,[["b"]],{lock:"R"}),
+   T(60,160,"G3 (Delete): p8 を持って p7 の W が欲しい","cap"),
+   ...leafNode(60,220,7,[["a"]],{}),
+   ...leafNode(260,220,8,[["b"]],{lock:"W"}),
+   P("M290 220 q-120 60 -180 -30","arrow warn"),
+   T(240,290,"TryLock(p7) 失敗 → errRestart で全解放・再試行","cap")]},
+{cap:"<code>opSlots</code> (上限20) が操作数を絞る。構造変更中にバッファ不足になっても ErrNoFreeFrame リトライで進める —— 待機中の操作は何も保持しないので誰かは必ず進む。",
+ hl:[6,7,8],
+ svg:[T(60,40,"同時操作セマフォ","cap"),
+   R(60,60,500,60,"nodebox"),T(70,95,"opSlots: 20","cap"),
+   ...[0,1,2,3].map(i=>[R(600+i*70,60,60,60,"cell"),
+     T(605+i*70,95,"op"+(i+1),"keytxt")]).flat(),
+   T(60,160,"最大 pin ≈ 20 × (高さ8+兄弟) ≪ 256 フレーム","lbl"),
+   T(60,200,"全枠占有でも pin 保持なしの待機 → 必ず進行","cap")]}]},
+
+// ---- 7. buffer pool ------------------------------------------------------
+buffer:{code:{file:"bptree/buffer.go — fetch()",lines:[
+`if idx, ok := bp.table[pid]; ok { // ヒット`,
+`\tf := &bp.frames[idx]; f.pin++; f.touch(bp); return f`,
+`}`,
+`victim := 最小 lastUsed の pin==0 フレーム // LRU`,
+`if victim < 0 { return nil, ErrNoFreeFrame }`,
+`if f.dirty { bp.disk.writePage(f.pageID, &f.data) }`,
+`delete(bp.table, f.pageID)`,
+`bp.disk.readPage(pid, &f.data)`,
+`f.pageID = pid; f.pin = 1; bp.table[pid] = victim`,
+`// 規約: latch ⇒ pin 済み, Unpin は Unlock の後`,
+]},steps:[
+{cap:"fetch ヒット: テーブルにあれば pin++ して即返却。呼び出し側はその後ラッチを取得 —— 「pin なしでラッチ」の状態は作らない。",
+ hl:[1,2],
+ svg:[T(60,40,"fetch(p5): ヒット","cap"),
+   ...[0,1,2].map(i=>[R(80+i*130,70,120,80,"cell"),
+     T(90+i*130,95,"frame"+i,"lbl"),
+     T(90+i*130,120,["p3 pin=1","p5 pin=2","p9 pin=0"][i],"keytxt")]).flat(),
+   A(620,110,520,110),T(640,110,"p5 → frame1","cap")]},
+{cap:"ミス + 空きフレーム: pin=0 の枠があればそこへ readPage。",
+ hl:[4,8,9],
+ svg:[T(60,40,"fetch(p7): ミス, 空きあり","cap"),
+   ...[0,1,2].map(i=>[R(80+i*130,70,120,80,"cell"),
+     T(90+i*130,95,"frame"+i,"lbl"),
+     T(90+i*130,120,["p3 pin=1","p5 pin=1","空 pin=0"][i],"keytxt")]).flat(),
+   A(600,60,340,70),T(620,50,"p7 を読込","cap"),
+   T(340,180,"frame2: p7, pin=1","cap")]},
+{cap:"ミス + 全占有: pin=0 の中で最も古い (最小 lastUsed) を victim に。dirty なら先に writePage で書き戻してから新ページを読込 —— 喪失なし。",
+ hl:[4,5,6,7,8,9],
+ svg:[T(60,40,"fetch(p8): ミス → LRU エビクション","cap"),
+   ...[0,1,2].map(i=>[R(80+i*130,70,120,80,"cell"+(i===1?" hot":"")),
+     T(90+i*130,95,"frame"+i,"lbl"),
+     T(90+i*130,120,["p3 pin=1","p2 pin=0 dirty","p9 pin=1"][i],"keytxt")]).flat(),
+   T(210,180,"frame1 = 最古 → p2 を writePage","cap"),
+   A(270,160,270,140,"arrow warn"),
+   T(210,220,"その後 p8 を読込","cap")]},
+{cap:"全フレーム pin 中なら ErrNoFreeFrame。呼び出し側 (fetchRetry) が Gosched で再試行。ラッチ保持中は必ず pin 済みなので、ラッチ保持者がエビクト対象になることはない。",
+ hl:[5,10],
+ svg:[T(60,40,"fetch: 全 pin 中","cap"),
+   ...[0,1,2].map(i=>[R(80+i*130,70,120,80,"cell"),
+     T(90+i*130,95,"frame"+i,"lbl"),
+     T(90+i*130,120,["p3 pin=1","p5 pin=2","p9 pin=1"][i],"keytxt")]).flat(),
+   T(80,200,"→ ErrNoFreeFrame → 呼び出し側が再試行","cap"),
+   T(80,240,"opSlots≤20 のおかげで誰かが必ず unpin して進む","lbl")]}]},
+
+// ---- 8. RangeScan --------------------------------------------------------
+scan:{code:{file:"bptree/tree.go — rangeScan()（要約）",lines:[
+`// Get と同じ R クラビングで開始葉へ`,
+`pos, _ := leafFindPos(f.data[:], start)`,
+`for i := pos; i < n; i++ {`,
+`\tk := leafKey(f.data[:], i)`,
+`\tif k > end { done = true; break }`,
+`\tout = append(out, Pair{k, leafVal(f.data[:], i)})`,
+`}`,
+`next := leafNext(f.data[:])           // 右兄弟`,
+`nf, _ := t.pool.fetch(next)`,
+`nf.latch.RLock()                      // 次を先に R`,
+`f.latch.RUnlock(); t.pool.unpin(f,false)`,
+`f = nf; start = math.MinInt64         // 以後は全件`,
+]},steps:[
+{cap:"RangeScan(15, 65): Get と同じ降下で開始葉 p6 に到達。<code>leafFindPos(15)</code> で最初の ≥15 の位置へ。",
+ hl:[1,2],
+ svg:[T(30,30,"開始葉を探索 (start=15)","cap"),
+   ...internalNode(400,40,1,[32,62],{}),
+   ...leafNode(200,140,6,[[12],[15],[18]],{cls:"visited",hot:1,lock:"R"}),
+   ...leafNode(400,140,7,[[32],[35],[38]],{}),
+   ...leafNode(600,140,8,[[62],[65],[68]],{}),
+   ED(430,80,270,140),ED(500,80,470,140,"fade"),
+   A(330,165,395,165,"arrow leafnext"),A(530,165,595,165,"arrow leafnext")]},
+{cap:"葉内を順に収集 (15,18)。<code>end=65</code> を超えなければ nextLeafPID へ。",
+ hl:[3,4,5,6],
+ svg:[T(30,30,"p6 から 15,18 を収集","cap"),
+   ...leafNode(200,100,6,[[12],[15],[18]],{moved:[1,2],lock:"R"}),
+   T(200,80,"out = [(15,…),(18,…)]","cap"),
+   A(330,125,395,125,"arrow leafnext"),
+   ...leafNode(400,100,7,[[32],[35],[38]],{}),
+   A(530,125,595,125,"arrow leafnext"),
+   ...leafNode(600,100,8,[[62],[65],[68]],{})]},
+{cap:"水平カップリング: 次の葉 p7 を fetch→<b>R ラッチしてから</b> p6 を解放。このブロッキング RLock が安全なのは、逆方向 (左兄弟の W 取得) が必ず <code>TryLock</code> だから —— 巡回待ちが作れない。",
+ hl:[8,9,10,11],
+ svg:[T(30,30,"p7 を R してから p6 解放","cap"),
+   ...leafNode(200,100,6,[[12],[15],[18]],{cls:"fade"}),
+   A(330,125,395,125,"arrow leafnext"),
+   ...leafNode(400,100,7,[[32],[35],[38]],{cls:"visited",lock:"R"}),
+   A(530,125,595,125,"arrow leafnext"),
+   ...leafNode(600,100,8,[[62],[65],[68]],{})]},
+{cap:"途中で並行スプリットが起きても、保持中の葉は分割できないので走査位置のキーは失われない。次葉到達時点の内容を読む「カーソル一貫性」。",
+ hl:[8,9,10,11,12],
+ svg:[T(30,30,"並行スプリットへの耐性","cap"),
+   ...leafNode(400,80,7,[[32],[35],[38]],{lock:"R"}),
+   A(530,105,595,105,"arrow leafnext"),
+   ...leafNode(600,60,8,[[62],[65]],{}),
+   ...leafNode(600,140,9,[[66],[68]],{moved:[0,1]}),
+   A(650,80,620,140,"arrow leafnext"),A(745,140,780,140,"arrow leafnext"),
+   T(400,220,"スキャンが持つ p7 は分割されない (R が W をブロック)","lbl"),
+   T(400,250,"p8 の分割は p8.next を更新してから解放","lbl")]},
+{cap:"<code>k &gt; end (65)</code> で終了: 62,65 を収集して 68 で打ち切り。結果は昇順ソート済み —— リーフチェーンの構造そのもの。",
+ hl:[5,6,12],
+ svg:[T(30,30,"end=65 で終了","cap"),
+   ...leafNode(200,100,6,[[15],[18]],{cls:"fade"}),
+   ...leafNode(400,100,7,[[32],[35],[38]],{cls:"fade"}),
+   ...leafNode(600,100,8,[[62],[65],[68]],{moved:[0,1],hot:2,lock:"R"}),
+   T(200,200,"out = [15,18,32,35,38,62,65]","cap")]}]}
+};
+
+document.querySelectorAll("[data-anim]").forEach(el=>{
+  const key = el.dataset.anim;
+  if(G[key]) mountAnim(el, G[key].steps, G[key].code);
+});
+</script>
+</body>
+</html>
