@@ -139,6 +139,7 @@ type BufferPool struct {
 - `Unpin(f, dirty)` : pin--、dirty フラグ OR。
 - `FlushAll()` : 全 dirty フレームを WritePage（Close 時）。
 - victim が無い（全フレーム pin 中）→ `ErrNoFreeFrame`。高さ≤8 なので 1 操作の同時 pin はせいぜい 10 前後。256 フレームで実用上枯渇しない。
+- **フレーム枯渇デッドロック対策（レビュー指摘反映）**: 構造変更伝播中の `allocPage`/`fetch` は中断できないため、無限リトライを「他 op がフレームを解放する」前提で行う。この前提を保証するため、公開 API 入口でセマフォ（`opSlots`, 上限 `maxConcurrentOps = 20`）を取る。実行中 op の最大同時 pin ≈ 20×(K+3) ≈ 220 < 256 となり、セマフォ待ちの op は何も保持しないため、デッドロック巡回が成立しない。
 - **pin とラッチの不変条件**: ラッチを保持している間、そのフレームは必ず pin 済み。これにより victim は絶対にラッチ保持中のフレームにならない（pin>0 ⇒ エビクション対象外）。
 - `pool.mu` はフレームの pin/table 更新のみを守る短命ミューテックス。`pool.mu` 保持中にページラッチは取得しない（ロック順序: ページラッチ > pool.mu）。
 
