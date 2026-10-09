@@ -10,11 +10,12 @@
 - [x] 2. `shared/bptree-sim.js` シミュレータ + `test/sim.test.js` (`node --test` 15件緑)
 - [x] 3. `shared/bptree-viz.js` + `shared/viz.css` + `shared/topics.js` ステップエンジン + `test/viz.smoke.js` (DOMシム全ステップ描画)
 - [x] 4. トピックページ 7 本 (`topics/*.html`) + `index.html` ポータル化 + `overview.html` 退避
-- [ ] 5. 全成果物レビュー (swe-2 系) → 対応 → commit & push
-- [ ] 6. 最終確認: ブラウザ表示目視、全テスト緑、TODO 全完了
+- [x] 5. 全成果物レビュー (swe-2 系) → 対応 → commit & push
+- [x] 6. 最終確認: ブラウザ表示目視、全テスト緑、TODO 全完了
 
 ## レビュー記録
 
 | タスク | レビュー結果 | 対応 |
 |--------|--------------|------|
 | 1. 設計ドキュメント | must-fix 4件（get(45) が実はミス、node-insert の準備が満杯葉でない、promote が copy-up/move-up を混同、DOM 同一性が PageID 再利用を考慮していない）＋RISK（trylock-fail リトライ時の found=false 挙動、pn==0 分岐、全デモのキー列未確定） | 全デモのキー列を手計算で確定・検証、copyUp/promoteUp イベント分離、ノード DOM を (pageID,generation) で一意化、リトライ挙動をシナリオ・sim 仕様に明記、pn==0 移植を明記、シナリオ→イベント検証テストを追加 |
+| 2-4. 実装成果物 | must-fix 2件: (a) スナップショットノードに `id` フィールドがなく `NX:/C:/S:` セルIDが `undefined` で全ノード衝突 → ノードキーを渡すよう修正＋セル所有数アサーション追加、(b) structure.html の internalInsert hl が未実行の internalInitRoot (tree.go:452) を指していた → internalInsertKeyAt 抜粋追加し 415 へ修正。NIT: leaf-link ステップが配線後で視覚差分ゼロ → 順序修正、空木 get/del クラッシュ → コンストラクタで空葉ルート生成 (initEmpty 相当)、pid ラベルがラッチ時のみ → 常時表示、子スロットの世代サフィックス、merge/structure の hl 誤対応、caption typo、overview へのポータルリンク | 全て対応。`node --test` 26件緑 (sim 15 + viz スモーク 11) |
