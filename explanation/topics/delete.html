@@ -48,6 +48,22 @@
 const prep = s => { for (const k of [10,20,30,40,50,60,70]) s.put(k, k * 100); };
 
 const CODE = { file: "bptree/tree.go delete() + node.go (抜粋)", lines:
+  src("tree.go", 491,
+`func (t *Tree) delete(key int64) (bool, error) {`).lines.concat(
+  [{ no: 0, text: "	…" }],
+  src("tree.go", 515,
+`	t.rootMu.Lock()
+	rootF, err := t.pool.fetch(t.meta.rootPageID)
+	if err != nil {
+		return false, err
+	}
+	cur = rootF
+	cur.latch.Lock()
+	if safeForDelete(cur.data[:]) {
+		// A safe root cannot shrink to empty this op — release rootMu early.
+		t.rootMu.Unlock()
+		rootHeld = false
+	}`).lines, [{ no: 0, text: "" }],
   src("tree.go", 529,
 `	for !isLeaf(cur.data[:]) {
 		ci := internalFindChildIdx(cur.data[:], key)
@@ -92,13 +108,14 @@ const CODE = { file: "bptree/tree.go delete() + node.go (抜粋)", lines:
 		leafSetPair(b, i, leafKey(b, i+1), leafVal(b, i+1))
 	}
 	setNodeCount(b, int64(n-1))
-}`).lines) };
+}`).lines)) };
 
 const hl = {
-  "latch":              [535],
+  "tag:init":           [491],
+  "tag:latch-root":     [515, 516, 520, 521],
   "descend":            [530, 531],
-  "tag:descend-safe":   [536, 537, 538],
-  "tag:descend-unsafe": [540, 543, 544],
+  "tag:descend-safe":   [535, 536, 537, 538],
+  "tag:descend-unsafe": [535, 540, 543, 544],
   "leafRemove":         [552],
   "tag:leaf-remove":    [550, 551, 552],
   "tag:release":        [554, 556, 558],

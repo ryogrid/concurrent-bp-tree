@@ -48,6 +48,27 @@
 const prep = s => { for (const k of [10,20,30,40,50,60,70]) s.put(k, k * 100); };
 
 const CODE = { file: "bptree/tree.go put() 降下部 + node.go (抜粋)", lines:
+  src("tree.go", 297,
+`func (t *Tree) put(key, value int64) (err error) {`).lines.concat(
+  [{ no: 0, text: "	… (deferred cleanup 設定)" }],
+  src("tree.go", 324,
+`	t.rootMu.Lock()
+	rootF, err := t.pool.fetch(t.meta.rootPageID)
+	if err != nil {
+		return err
+	}
+	cur = rootF
+	cur.latch.Lock()
+
+	// If the root cannot split, rootPageID cannot change — release rootMu
+	// early so other ops can start. If it can split and the tree is already
+	// at max height, bail before any mutation.
+	if safeForInsert(cur.data[:]) {
+		t.rootMu.Unlock()
+		rootHeld = false
+	} else if t.meta.height >= MaxTreeHeight {
+		return ErrMaxTreeHeight
+	}`).lines, [{ no: 0, text: "" }],
   src("tree.go", 345,
 `	for !isLeaf(cur.data[:]) {
 		ci := internalFindChildIdx(cur.data[:], key)
@@ -61,6 +82,8 @@ const CODE = { file: "bptree/tree.go put() 降下部 + node.go (抜粋)", lines:
 			t.release(cur, false)
 		} else {
 			if safeForInsert(cur.data[:]) {
+				// cur can't split further, so ancestors above it are
+				// unreachable by this propagation — drop them early.
 				t.releaseHeld(&held)
 			}
 			held.frames = append(held.frames, cur)
@@ -101,9 +124,11 @@ const CODE = { file: "bptree/tree.go put() 降下部 + node.go (抜粋)", lines:
 	}
 	leafSetPair(b, pos, k, v)
 	setNodeCount(b, int64(n+1))
-}`).lines) };
+}`).lines)) };
 
 const hl = {
+  "tag:init":           [297],
+  "tag:latch-root":     [324, 325, 329, 330],
   "descend":            [346, 347],
   "tag:descend-safe":   [351, 352, 353, 354],
   "tag:descend-unsafe": [351, 356, 361, 362],
@@ -111,7 +136,7 @@ const hl = {
   "leafInsert":         [381],
   "tag:overwrite":      [368, 369, 370],
   "tag:insert":         [368, 380, 381],
-  "tag:release":        [373, 384],
+  "tag:release":        [371, 373, 382, 384],
 };
 buildDemo(document.getElementById("dA"), {
   prep, caption0: "準備完了 (基準木)。L2 [30,40] には空きがある → put(45)。",

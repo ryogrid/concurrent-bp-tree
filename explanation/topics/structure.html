@@ -77,7 +77,59 @@ for (const [btn, sec] of Object.entries(secs)) {
   };
 }
 
-const CODE = { file: "bptree/tree.go + node.go (抜粋)", lines:
+// --- put 系デモ (① ルート成長 / ② 分岐追加) のコード抜粋 ---
+const CODE_PUT = { file: "bptree/tree.go put() (抜粋)", lines:
+  src("tree.go", 297,
+`func (t *Tree) put(key, value int64) (err error) {`).lines.concat(
+  [{ no: 0, text: "	…" }],
+  src("tree.go", 324,
+`	t.rootMu.Lock()
+	rootF, err := t.pool.fetch(t.meta.rootPageID)
+	if err != nil {
+		return err
+	}
+	cur = rootF
+	cur.latch.Lock()`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 345,
+`	for !isLeaf(cur.data[:]) {
+		ci := internalFindChildIdx(cur.data[:], key)
+		cf, err := t.pool.fetch(internalChild(cur.data[:], ci))
+		if err != nil {
+			return err
+		}
+		cf.latch.Lock()
+		if safeForInsert(cf.data[:]) {
+			t.releaseHeld(&held)
+			t.release(cur, false)
+		} else {
+			if safeForInsert(cur.data[:]) {
+				// cur can't split further, so ancestors above it are
+				// unreachable by this propagation — drop them early.
+				t.releaseHeld(&held)
+			}
+			held.frames = append(held.frames, cur)
+			held.idxs = append(held.idxs, ci)
+		}
+		cur = cf
+	}`).lines, [{ no: 0, text: "	… (葉分裂: 392-404)" }],
+  src("tree.go", 392,
+`	// Leaf split: build 511 pairs in scratch, 255 stay / 256 go right.
+	rightPID, err := t.allocPageRetry()
+	if err != nil {
+		return err
+	}
+	rightF, err = t.fetchRetry(rightPID)
+	if err != nil {
+		return err
+	}
+	rightF.latch.Lock()
+	sep := leafInsertSplit(cur.data[:], rightF.data[:], key, value)
+	leafSetNext(rightF.data[:], leafNext(cur.data[:]))
+	leafSetNext(cur.data[:], rightPID)`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 414,
+`		if nodeCount(parent.data[:]) < MaxInternalKeys {
+			internalInsertKeyAt(parent.data[:], ci, sep, rightPID)
+			t.release(parent, true)`).lines, [{ no: 0, text: "	…" }],
   src("tree.go", 440,
 `	if pending {
 		// The split reached the top: grow a new root (rootMu still held).
@@ -90,15 +142,90 @@ const CODE = { file: "bptree/tree.go + node.go (抜粋)", lines:
 			return err
 		}
 		nrf.latch.Lock()
+		// No-fail zone: nrf is latched but untracked until released below.
 		internalInitRoot(nrf.data[:], sep, leftPID, rightPID)
 		t.meta.rootPageID = newRoot
 		t.meta.height++
 		t.release(nrf, true)
-	}`).lines.concat([{ no: 0, text: "" }],
-  src("tree.go", 414,
-`		if nodeCount(parent.data[:]) < MaxInternalKeys {
-			internalInsertKeyAt(parent.data[:], ci, sep, rightPID)
-			t.release(parent, true)`).lines, [{ no: 0, text: "" }],
+	}`).lines, [{ no: 0, text: "" }],
+  src("tree.go", 458,
+`	t.release(cur, true)
+	cur = nil
+	t.release(rightF, true)
+	rightF = nil
+	t.releaseHeld(&held)`).lines) };
+
+const hlPut = {
+  "tag:init":           [297],
+  "tag:latch-root":     [324, 325, 329, 330],
+  "tag:descend-safe":   [351, 352, 353, 354],
+  "tag:descend-unsafe": [351, 356, 361, 362],
+  "tag:leaf-split":     [393, 401, 402],
+  "tag:leaf-link":      [403, 404],
+  "internalInsert":     [415],
+  "copyUp":             [415],
+  "tag:propagate":      [414, 415],
+  "tag:root-grow":      [440, 450, 452, 453, 454],
+  "rootGrow":           [452, 453, 454],
+  "tag:release":        [458, 460, 462],
+};
+
+// --- del 系デモ (③ ルート縮小) のコード抜粋 ---
+const CODE_DEL = { file: "bptree/tree.go delete() (抜粋)", lines:
+  src("tree.go", 491,
+`func (t *Tree) delete(key int64) (bool, error) {`).lines.concat(
+  [{ no: 0, text: "	…" }],
+  src("tree.go", 515,
+`	t.rootMu.Lock()
+	rootF, err := t.pool.fetch(t.meta.rootPageID)
+	if err != nil {
+		return false, err
+	}
+	cur = rootF
+	cur.latch.Lock()`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 529,
+`	for !isLeaf(cur.data[:]) {
+		ci := internalFindChildIdx(cur.data[:], key)
+		cf, err := t.pool.fetch(internalChild(cur.data[:], ci))
+		if err != nil {
+			return false, err
+		}
+		cf.latch.Lock()
+		if safeForDelete(cf.data[:]) {
+			t.releaseHeld(&held)
+			t.release(cur, false)
+		} else {
+			if safeForDelete(cur.data[:]) {
+				t.releaseHeld(&held)
+			}
+			held.frames = append(held.frames, cur)
+			held.idxs = append(held.idxs, ci)
+		}
+		cur = cf
+	}`).lines, [{ no: 0, text: "" }],
+  src("tree.go", 550,
+`	pos, found := leafFindPos(cur.data[:], key)
+	if found {
+		leafRemoveAt(cur.data[:], pos)
+	}
+	if int(nodeCount(cur.data[:])) >= MinLeafPairs {
+		// Key removed (or absent) and no underflow — done.
+		t.release(cur, found)
+		cur = nil
+		t.releaseHeld(&held)
+		if rootHeld {
+			t.rootMu.Unlock()
+			rootHeld = false
+		}
+		return found, nil
+	}`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 573,
+`	for cur != nil {
+		leaf := isLeaf(cur.data[:])
+		minKeys := MinLeafPairs
+		if !leaf {
+			minKeys = MinInternalKeys
+		}`).lines, [{ no: 0, text: "	… (右兄弟処理は merge ページ参照)" }],
   src("tree.go", 705,
 `		// Merge cur into the left sibling.
 		if leaf {
@@ -126,35 +253,44 @@ const CODE = { file: "bptree/tree.go + node.go (抜粋)", lines:
 				cur = nil
 				if err := t.freePage(oldPID); err != nil {
 					return found, err
-				}`).lines) };
+				}`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 725,
+`	// Success tail: any frames still tracked are unmodified ancestors.
+	t.releaseHeld(&held)
+	if rootHeld {
+		t.rootMu.Unlock()
+		rootHeld = false
+	}
+	return found, nil`).lines) };
 
-const hl = {
-  "tag:root-grow":   [452, 453, 454],
-  "rootGrow":        [452, 453, 454],
-  "tag:root-shrink": [584, 586, 587, 590],
-  "rootShrink":      [584, 586, 587],
-  "internalInsert":  [415],
-  "copyUp":          [415],
-  "tag:propagate":   [414, 415],
-  "internalRemove":  [712],
-  "free":            [590, 718],
-  "tag:merge-left":  [707, 708, 712, 718],
+const hlDel = {
+  "tag:init":           [491],
+  "tag:latch-root":     [515, 516, 520, 521],
+  "descend":            [530, 531],
+  "tag:descend-safe":   [535, 536, 537, 538],
+  "tag:descend-unsafe": [535, 540, 543, 544],
+  "leafRemove":         [552],
+  "tag:leaf-remove":    [550, 551, 552],
+  "tag:underflow":      [554, 573, 574],
+  "tag:merge-left":     [707, 708, 710, 712, 718],
+  "tag:root-shrink":    [584, 586, 587, 590],
+  "tag:release":        [726, 727, 728],
 };
 
 buildDemo(document.getElementById("d1"), {
   prep: s => { for (const k of [10,20,30,40]) s.put(k, k * 100); },
   caption0: "準備完了: 高さ1、ルートは葉 [10,20,30,40] (満杯)。put(50) で分裂 → 新ルート誕生。",
-  ops: [s => s.put(50, 5000)], code: CODE, hl,
+  ops: [s => s.put(50, 5000)], code: CODE_PUT, hl: hlPut,
 });
 buildDemo(document.getElementById("d2"), {
   prep: s => { for (const k of [10,20,30,40,50,60,70,75]) s.put(k, k * 100); },
   caption0: "準備完了: ルート [30,50] 3子。put(80) で親に分岐が1つ増える。",
-  ops: [s => s.put(80, 8000)], code: CODE, hl,
+  ops: [s => s.put(80, 8000)], code: CODE_PUT, hl: hlPut,
 });
 buildDemo(document.getElementById("d3"), {
   prep: s => { for (const k of [10,20,30,40,50]) s.put(k, k * 100); },
   caption0: "準備完了: 高さ2、ルート [30] → L1[10,20], L2[30,40,50]。del(40),del(50) でルート縮小へ。",
-  ops: [s => s.del(40), s => s.del(50)], code: CODE, hl,
+  ops: [s => s.del(40), s => s.del(50)], code: CODE_DEL, hl: hlDel,
 });
 </script>
 </div>

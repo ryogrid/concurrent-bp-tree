@@ -197,6 +197,19 @@ for (const f of topicFiles) {
       demos++;
       for (let i = 0; i < el._mount.count; i++) {
         el._mount.show(i);
+        // コードパネル: 全ステップで 1 行以上ハイライトされること
+        // (対応コードがあるのにハイライトされないステップの防止)
+        const hlLines = el.querySelectorAll("ln")
+          .filter(e => e._cls.has("hl")).length;
+        assert.ok(hlLines > 0,
+          `${f} step${i}: コードハイライトが 1 行も無い`);
+        // hl の行番号はすべてパネル内に存在すること (写経ミスで
+        // 指していない行番号が残らないように)
+        const panelNos = new Set(
+          el.querySelectorAll("ln").map(e => +e.dataset.no));
+        for (const no of (el._mount.steps[i].code || { hl: [] }).hl)
+          assert.ok(panelNos.has(no),
+            `${f} step${i}: hl 行番号 ${no} がコードパネルに存在しない`);
         const viz = el._mount.viz;
         const st = el._mount.viz.lastStepState;
         if (st) {

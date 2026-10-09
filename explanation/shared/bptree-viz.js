@@ -369,7 +369,7 @@
     if (btnA) btnA.onclick = () => play();
     if (btnR) btnR.onclick = () => { stop(); viz.reset(); show(0); };
     show(0);
-    return { show, play, stop, viz, count: cfg.steps.length };
+    return { show, play, stop, viz, count: cfg.steps.length, steps: cfg.steps };
   }
 
   function esc(s) {

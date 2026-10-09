@@ -78,6 +78,77 @@ const prepE = s => {
 };
 
 const CODE = { file: "bptree/tree.go delete() アンダーフロー処理 (抜粋)", lines:
+  src("tree.go", 491,
+`func (t *Tree) delete(key int64) (bool, error) {`).lines.concat(
+  [{ no: 0, text: "	…" }],
+  src("tree.go", 515,
+`	t.rootMu.Lock()
+	rootF, err := t.pool.fetch(t.meta.rootPageID)
+	if err != nil {
+		return false, err
+	}
+	cur = rootF
+	cur.latch.Lock()`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 529,
+`	for !isLeaf(cur.data[:]) {
+		ci := internalFindChildIdx(cur.data[:], key)
+		cf, err := t.pool.fetch(internalChild(cur.data[:], ci))
+		if err != nil {
+			return false, err
+		}
+		cf.latch.Lock()
+		if safeForDelete(cf.data[:]) {
+			t.releaseHeld(&held)
+			t.release(cur, false)
+		} else {
+			if safeForDelete(cur.data[:]) {
+				t.releaseHeld(&held)
+			}
+			held.frames = append(held.frames, cur)
+			held.idxs = append(held.idxs, ci)
+		}
+		cur = cf
+	}`).lines, [{ no: 0, text: "" }],
+  src("tree.go", 550,
+`	pos, found := leafFindPos(cur.data[:], key)
+	if found {
+		leafRemoveAt(cur.data[:], pos)
+	}
+	if int(nodeCount(cur.data[:])) >= MinLeafPairs {
+		// Key removed (or absent) and no underflow — done.
+		t.release(cur, found)
+		cur = nil
+		t.releaseHeld(&held)
+		if rootHeld {
+			t.rootMu.Unlock()
+			rootHeld = false
+		}
+		return found, nil
+	}`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 573,
+`	for cur != nil {
+		leaf := isLeaf(cur.data[:])
+		minKeys := MinLeafPairs
+		if !leaf {
+			minKeys = MinInternalKeys
+		}`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 607,
+`		top := len(held.frames) - 1
+		parent = held.frames[top]
+		ci := held.idxs[top]
+		held.frames, held.idxs = held.frames[:top], held.idxs[:top]
+		pn := int(nodeCount(parent.data[:]))
+
+		if pn == 0 {
+			// Degenerate single-child parent (possible via residually
+			// underfull interior nodes): no sibling exists to borrow from
+			// or merge into — release cur and keep climbing with the
+			// parent as the node to fix.
+			t.release(cur, true)
+			cur = parent
+			parent = nil
+			continue
+		}`).lines, [{ no: 0, text: "" }],
   src("tree.go", 624,
 `		if ci < pn {
 			// Right sibling exists: latch order left→right is respected.
@@ -127,6 +198,8 @@ const CODE = { file: "bptree/tree.go delete() アンダーフロー処理 (抜�
 			return found, err
 		}
 		if !sib.latch.TryLock() {
+			// Latching a left sibling while holding nodes to its right can
+			// deadlock against a scan's left→right coupling — restart.
 			// CRITICAL: sib is pinned but NOT latched here — unpin only,
 			// never Unlock (that would steal another holder's latch or panic).
 			t.pool.unpin(sib, false)
@@ -170,24 +243,36 @@ const CODE = { file: "bptree/tree.go delete() アンダーフロー処理 (抜�
 				cur = nil
 				if err := t.freePage(oldPID); err != nil {
 					return found, err
-				}`).lines) };
+				}`).lines, [{ no: 0, text: "	…" }],
+  src("tree.go", 725,
+`	// Success tail: any frames still tracked are unmodified ancestors.
+	t.releaseHeld(&held)
+	if rootHeld {
+		t.rootMu.Unlock()
+		rootHeld = false
+	}
+	return found, nil`).lines)) };
 
 const hl = {
+  "tag:init":           [491],
+  "tag:latch-root":     [515, 516, 520, 521],
+  "descend":            [530, 531],
+  "tag:descend-safe":   [535, 536, 537, 538],
+  "tag:descend-unsafe": [535, 540, 543, 544],
+  "leafRemove":         [552],
+  "tag:leaf-remove":    [550, 551, 552],
+  "tag:underflow":      [554, 573, 574],
+  "tag:climb":          [613, 618, 619],
+  "tag:release":        [726, 727, 728],
   "tag:borrow-right": [631, 635, 636, 638, 639, 640],
   "tag:borrow-left":  [687, 690, 691, 693, 694, 695],
   "tag:merge-right":  [652, 653, 655, 657, 663],
   "tag:merge-left":   [707, 708, 710, 712, 718],
-  "merge":            [657, 712],
-  "internalRemove":   [657, 712],
-  "free":             [663, 718],
   "trylock":          [678],
   "tag:trylock-fail": [678, 683, 685],
   "tag:restart":      [685],
   "tag:root-shrink":  [584, 586, 587, 590],
-  "rootShrink":       [584, 586, 587],
 };
-// デモ E は freePage の呼び出し位置が混在 (葉マージ 663 + ルート縮小 590)
-const hlE = Object.assign({}, hl, { free: [663, 590] });
 
 buildDemo(document.getElementById("dA"), {
   prep: prepA,
@@ -217,7 +302,7 @@ buildDemo(document.getElementById("dD"), {
 buildDemo(document.getElementById("dE"), {
   prep: prepE,
   caption0: "準備完了: 高さ3 (root[70] → Ia[30,50], Ib[80,90])。del(20) が連鎖マージを起こす。",
-  ops: [s => s.del(20)], code: CODE, hl: hlE,
+  ops: [s => s.del(20)], code: CODE, hl,
 });
 </script>
 </div>
