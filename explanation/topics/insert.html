@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>要素挿入 — B+木 KVS 解説</title>
+<link rel="stylesheet" href="../shared/viz.css">
+</head>
+<body class="viz-topic">
+<div class="viz-main">
+<nav class="viz-nav">
+  <a href="get.html">← 要素探索</a>
+  <a href="../index.html">ポータル</a>
+  <a href="node-insert.html">次: ノード挿入 →</a>
+</nav>
+<h1>2. 要素挿入 (<code>Put</code> — 分裂しない場合)</h1>
+<p>
+挿入は <b>W (排他) ラッチでのクラビング下降</b> が本質。
+「子が安全 (=分裂しても自分に影響しない)」と判明した時点で
+祖先のラッチを一括解放するのが Get との違い。
+ここでは葉に空きがあるケースを見る —— 分裂するケースは
+<a href="split.html">スプリット</a> / <a href="node-insert.html">ノード挿入</a> ページ。
+</p>
+<ul>
+<li><b>安全なノード</b>: 挿入しても溢れない (<code>count &lt; MaxLeafPairs</code>)</li>
+<li><b>upsert</b>: キーが既にあれば値の上書き (<code>leafSetPair</code>)</li>
+</ul>
+
+<h2>デモ A: 新規挿入 — <code>put(45)</code></h2>
+<div id="dA"></div>
+
+<h2>デモ B: 上書き — <code>put(40, v2)</code></h2>
+<div id="dB"></div>
+
+<h2>対応表</h2>
+<table>
+<tr><th>画面上の表現</th><th>コード</th></tr>
+<tr><td>赤 <b>W</b> バッジ</td><td><code>cf.latch.Lock()</code> (tree.go:351)</td></tr>
+<tr><td>祖先バッジの一括消滅</td><td><code>releaseHeld(&held)</code> (tree.go:353) — 安全な子に到達</td></tr>
+<tr><td>セルが右シフトして挿入</td><td><code>leafInsertAt</code> (node.go:77)</td></tr>
+<tr><td>セル値だけ変わる</td><td><code>leafSetPair</code> (node.go:54) — upsert</td></tr>
+</table>
+
+<script src="../shared/bptree-sim.js"></script>
+<script src="../shared/bptree-viz.js"></script>
+<script src="../shared/topics.js"></script>
+<script>
+const prep = s => { for (const k of [10,20,30,40,50,60,70]) s.put(k, k * 100); };
+
+const CODE = { file: "bptree/tree.go put() 降下部 + node.go (抜粋)", lines:
+  src("tree.go", 345,
+`	for !isLeaf(cur.data[:]) {
+		ci := internalFindChildIdx(cur.data[:], key)
+		cf, err := t.pool.fetch(internalChild(cur.data[:], ci))
+		if err != nil {
+			return err
+		}
+		cf.latch.Lock()
+		if safeForInsert(cf.data[:]) {
+			t.releaseHeld(&held)
+			t.release(cur, false)
+		} else {
+			if safeForInsert(cur.data[:]) {
+				t.releaseHeld(&held)
+			}
+			held.frames = append(held.frames, cur)
+			held.idxs = append(held.idxs, ci)
+		}
+		cur = cf
+	}
+
+	// cur is the W-latched leaf.
+	pos, found := leafFindPos(cur.data[:], key)
+	if found {
+		leafSetPair(cur.data[:], pos, key, value) // overwrite in place
+		t.release(cur, true)
+		cur = nil
+		t.releaseHeld(&held)
+		if rootHeld {
+			t.rootMu.Unlock()
+			rootHeld = false
+		}
+		return nil
+	}
+	if nodeCount(cur.data[:]) < MaxLeafPairs {
+		leafInsertAt(cur.data[:], pos, key, value)
+		t.release(cur, true)
+		cur = nil
+		t.releaseHeld(&held)
+		if rootHeld {
+			t.rootMu.Unlock()
+			rootHeld = false
+		}
+		return nil
+	}`).lines.concat([{ no: 0, text: "" }],
+  src("node.go", 77,
+`func leafInsertAt(b []byte, pos int, k, v int64) {
+	n := int(nodeCount(b))
+	for i := n; i > pos; i-- {
+		leafSetPair(b, i, leafKey(b, i-1), leafVal(b, i-1))
+	}
+	leafSetPair(b, pos, k, v)
+	setNodeCount(b, int64(n+1))
+}`).lines) };
+
+const hl = {
+  "descend":            [346, 347],
+  "tag:descend-safe":   [351, 352, 353, 354],
+  "tag:descend-unsafe": [351, 356, 361, 362],
+  "leafOverwrite":      [370],
+  "leafInsert":         [381],
+  "tag:overwrite":      [368, 369, 370],
+  "tag:insert":         [368, 380, 381],
+  "tag:release":        [373, 384],
+};
+buildDemo(document.getElementById("dA"), {
+  prep, caption0: "準備完了 (基準木)。L2 [30,40] には空きがある → put(45)。",
+  ops: [s => s.put(45, 4500)], code: CODE, hl,
+});
+buildDemo(document.getElementById("dB"), {
+  prep, caption0: "基準木。キー 40 は存在する → 値だけ上書きされる。",
+  ops: [s => s.put(40, 9999)], code: CODE, hl,
+});
+</script>
+</div>
+</body>
+</html>

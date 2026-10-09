@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>要素探索 — B+木 KVS 解説</title>
+<link rel="stylesheet" href="../shared/viz.css">
+</head>
+<body class="viz-topic">
+<div class="viz-main">
+<nav class="viz-nav">
+  <a href="../index.html">← ポータル</a>
+  <a href="../overview.html">全体概観</a>
+  <a href="insert.html">次: 要素挿入 →</a>
+</nav>
+<h1>1. 要素探索 (<code>Get</code>)</h1>
+<p>
+キーを <b>ルートから葉へ</b> たどるだけの最も単純な操作だが、
+並行実行の要である<b>ラッチカップリング (crabbing)</b> がここに表れる:
+子ノードの R ラッチを取得してから親の R ラッチを解放するため、
+木は常に「どこかが掴まれている」状態で降下し、他操作による
+構造変更と競合しない。読み同士は R (共有) ラッチなので、
+同じ経路を読む別の Get はブロックされない。
+</p>
+<p>
+準備木: <code>put(10,20,…,70)</code> で構築した高さ 2 の木
+(ルート <code>[30,50]</code>、葉 3 枚)。葉セルは
+<code>key:value</code> (value は key×100 にしてある)。
+右のコードパネルは実装の抜粋で、行番号は実ファイルのもの。
+</p>
+
+<h2>デモ A: ヒット — <code>get(40)</code></h2>
+<div id="dA"></div>
+
+<h2>デモ B: ミス — <code>get(45)</code></h2>
+<p>
+同じ葉にたどり着いても、<code>leafFindPos</code> が返す
+<code>pos</code> は「最初に key ≥ target になる位置」。
+45 は葉 <code>[30,40]</code> で pos=2 (=末尾) なので
+<code>found=false</code> を返す。経路はヒットと同じで、
+葉での分岐だけが違う点に注目。
+</p>
+<div id="dB"></div>
+
+<h2>対応表</h2>
+<table>
+<tr><th>画面上の表現</th><th>コード</th></tr>
+<tr><td>ノード右上の青 <b>R</b> バッジ</td><td><code>f.latch.RLock()</code> (tree.go:252,264)</td></tr>
+<tr><td>下降するステップ</td><td><code>internalFindChildIdx</code> (node.go:178) + <code>pool.fetch(internalChild(…,ci))</code> (tree.go:257-258)</td></tr>
+<tr><td>親の R バッジ消滅</td><td><code>f.latch.RUnlock(); unpin(f)</code> (tree.go:265-266) — ラッチカップリング</td></tr>
+<tr><td>葉での二分探索結果</td><td><code>leafFindPos</code> (node.go:61)</td></tr>
+<tr><td>全バッジ消滅で終了</td><td><code>RUnlock + unpin</code> (tree.go:275-276)</td></tr>
+</table>
+
+<script src="../shared/bptree-sim.js"></script>
+<script src="../shared/bptree-viz.js"></script>
+<script src="../shared/topics.js"></script>
+<script>
+const prep = s => { for (const k of [10,20,30,40,50,60,70]) s.put(k, k * 100); };
+
+const CODE = { file: "bptree/tree.go + node.go (抜粋)", lines:
+  src("tree.go", 245,
+`func (t *Tree) get(key int64) (int64, bool, error) {
+	t.rootMu.RLock()
+	f, err := t.pool.fetch(t.meta.rootPageID)
+	if err != nil {
+		t.rootMu.RUnlock()
+		return 0, false, err
+	}
+	f.latch.RLock()
+	t.rootMu.RUnlock()
+
+	// Crab down: R-latch child before releasing the parent.
+	for !isLeaf(f.data[:]) {
+		ci := internalFindChildIdx(f.data[:], key)
+		cf, err := t.pool.fetch(internalChild(f.data[:], ci))
+		if err != nil {
+			f.latch.RUnlock()
+			t.pool.unpin(f, false)
+			return 0, false, err
+		}
+		cf.latch.RLock()
+		f.latch.RUnlock()
+		t.pool.unpin(f, false)
+		f = cf
+	}
+
+	pos, found := leafFindPos(f.data[:], key)
+	var v int64
+	if found {
+		v = leafVal(f.data[:], pos)
+	}
+	f.latch.RUnlock()
+	t.pool.unpin(f, false)
+	return v, found, nil
+}`).lines.concat([{ no: 0, text: "" }],
+  src("node.go", 178,
+`func internalFindChildIdx(b []byte, target int64) int {
+	n := int(nodeCount(b))
+	lo, hi := 0, n
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if target < internalKey(b, mid) {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	return lo
+}`).lines, [{ no: 0, text: "" }],
+  src("node.go", 61,
+`func leafFindPos(b []byte, target int64) (int, bool) {
+	n := int(nodeCount(b))
+	lo, hi := 0, n
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if leafKey(b, mid) < target {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo, lo < n && leafKey(b, lo) == target
+}`).lines) };
+
+const hl = {
+  "descend":        [256, 257, 258, 264],
+  "unlatch":        [265, 266],
+  "tag:latch-root": [246, 247, 252],
+  "tag:leaf-find":  [270, 272, 273],
+  "tag:release":    [275, 276],
+};
+buildDemo(document.getElementById("dA"), {
+  prep, caption0: "準備完了: ルート [30,50]、葉 3 枚。ここから get(40) を実行。",
+  ops: [s => s.get(40)], code: CODE, hl,
+});
+buildDemo(document.getElementById("dB"), {
+  prep, caption0: "同じ木で get(45) — 経路は同じ、葉での結果だけが違う。",
+  ops: [s => s.get(45)], code: CODE, hl,
+});
+</script>
+</div>
+</body>
+</html>

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>要素削除 — B+木 KVS 解説</title>
+<link rel="stylesheet" href="../shared/viz.css">
+</head>
+<body class="viz-topic">
+<div class="viz-main">
+<nav class="viz-nav">
+  <a href="split.html">← スプリット</a>
+  <a href="../index.html">ポータル</a>
+  <a href="merge.html">次: マージとノード削除 →</a>
+</nav>
+<h1>5. 要素削除 (<code>Delete</code> — アンダーフローしない場合)</h1>
+<p>
+削除も <b>W ラッチのクラビング下降</b>。安全判定だけが挿入と違う:
+「子が安全」= 削除してもアンダーフローしない
+(<code>count &gt; MinLeafPairs</code>)。
+ここではリバランスが不要なケースを見る ——
+借用・マージが起きるケースは <a href="merge.html">マージ</a> ページ。
+</p>
+
+<h2>デモ A: <code>del(70)</code> — 削除しても Min を維持</h2>
+<div id="dA"></div>
+
+<h2>デモ B: <code>del(999)</code> — 存在しないキー</h2>
+<p>
+右端の葉まで降下するが <code>found=false</code>。
+葉が安全 (変更されない) ので祖先ラッチは早期に解放される。
+<code>delete</code> は <code>ok=false</code> を返して終了。
+</p>
+<div id="dB"></div>
+
+<h2>対応表</h2>
+<table>
+<tr><th>画面上の表現</th><th>コード</th></tr>
+<tr><td>赤枠 (アンダーフロー) にならず緑のまま</td><td><code>nodeCount(cur) &gt;= MinLeafPairs</code> (tree.go:554)</td></tr>
+<tr><td>セルの左シフト (要素消去)</td><td><code>leafRemoveAt</code> (node.go:87)</td></tr>
+<tr><td>安全な子で祖先解放</td><td><code>releaseHeld</code> (tree.go:537)</td></tr>
+</table>
+
+<script src="../shared/bptree-sim.js"></script>
+<script src="../shared/bptree-viz.js"></script>
+<script src="../shared/topics.js"></script>
+<script>
+const prep = s => { for (const k of [10,20,30,40,50,60,70]) s.put(k, k * 100); };
+
+const CODE = { file: "bptree/tree.go delete() + node.go (抜粋)", lines:
+  src("tree.go", 529,
+`	for !isLeaf(cur.data[:]) {
+		ci := internalFindChildIdx(cur.data[:], key)
+		cf, err := t.pool.fetch(internalChild(cur.data[:], ci))
+		if err != nil {
+			return false, err
+		}
+		cf.latch.Lock()
+		if safeForDelete(cf.data[:]) {
+			t.releaseHeld(&held)
+			t.release(cur, false)
+		} else {
+			if safeForDelete(cur.data[:]) {
+				t.releaseHeld(&held)
+			}
+			held.frames = append(held.frames, cur)
+			held.idxs = append(held.idxs, ci)
+		}
+		cur = cf
+	}
+
+	// cur is the W-latched leaf.
+	pos, found := leafFindPos(cur.data[:], key)
+	if found {
+		leafRemoveAt(cur.data[:], pos)
+	}
+	if int(nodeCount(cur.data[:])) >= MinLeafPairs {
+		// Key removed (or absent) and no underflow — done.
+		t.release(cur, found)
+		cur = nil
+		t.releaseHeld(&held)
+		if rootHeld {
+			t.rootMu.Unlock()
+			rootHeld = false
+		}
+		return found, nil
+	}`).lines.concat([{ no: 0, text: "" }],
+  src("node.go", 87,
+`func leafRemoveAt(b []byte, pos int) {
+	n := int(nodeCount(b))
+	for i := pos; i < n-1; i++ {
+		leafSetPair(b, i, leafKey(b, i+1), leafVal(b, i+1))
+	}
+	setNodeCount(b, int64(n-1))
+}`).lines) };
+
+const hl = {
+  "latch":              [535],
+  "descend":            [530, 531],
+  "tag:descend-safe":   [536, 537, 538],
+  "tag:descend-unsafe": [540, 543, 544],
+  "leafRemove":         [552],
+  "tag:leaf-remove":    [550, 551, 552],
+  "tag:release":        [554, 556, 558],
+  "tag:underflow":      [554],
+};
+buildDemo(document.getElementById("dA"), {
+  prep, caption0: "準備完了 (基準木)。L3 [50,60,70] から del(70) — 残り 2 個で Min=2 を維持。",
+  ops: [s => s.del(70)], code: CODE, hl,
+});
+buildDemo(document.getElementById("dB"), {
+  prep, caption0: "基準木。del(999) — 右端葉まで降りるがキーは不在。",
+  ops: [s => s.del(999)], code: CODE, hl,
+});
+</script>
+</div>
+</body>
+</html>

@@ -7,9 +7,9 @@
 
 - [x] 0. 設計ドキュメント作成 (`design.md`, `scenarios.md`, `TODO.md`)
 - [x] 1. 設計レビュー (swe-2 系 reviewer サブエージェント) → 対応 → commit & push
-- [ ] 2. `shared/bptree-sim.js` シミュレータ + `test/sim.test.js` (`node --test`)
-- [ ] 3. `shared/bptree-viz.js` + `shared/viz.css` + ステップエンジン + `test/viz.smoke.js`
-- [ ] 4. トピックページ 7 本 (`topics/*.html`) + `index.html` ポータル化 + `overview.html` 退避
+- [x] 2. `shared/bptree-sim.js` シミュレータ + `test/sim.test.js` (`node --test` 15件緑)
+- [x] 3. `shared/bptree-viz.js` + `shared/viz.css` + `shared/topics.js` ステップエンジン + `test/viz.smoke.js` (DOMシム全ステップ描画)
+- [x] 4. トピックページ 7 本 (`topics/*.html`) + `index.html` ポータル化 + `overview.html` 退避
 - [ ] 5. 全成果物レビュー (swe-2 系) → 対応 → commit & push
 - [ ] 6. 最終確認: ブラウザ表示目視、全テスト緑、TODO 全完了
 

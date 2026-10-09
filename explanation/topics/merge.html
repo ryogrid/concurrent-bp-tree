@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ノードのマージと削除 — B+木 KVS 解説</title>
+<link rel="stylesheet" href="../shared/viz.css">
+</head>
+<body class="viz-topic">
+<div class="viz-main">
+<nav class="viz-nav">
+  <a href="delete.html">← 要素削除</a>
+  <a href="../index.html">ポータル</a>
+  <a href="structure.html">次: 木構造の変化 →</a>
+</nav>
+<h1>6. 要素削除時のノードのマージとノードの削除</h1>
+<p>
+削除で <code>count &lt; Min</code> になったノードは<b>アンダーフロー</b> (赤枠)。
+修復は2段構え:
+</p>
+<ol>
+<li><b>借用 (redistribution)</b> — 兄弟が Min より多く持っていれば
+    1 エントリ分けてもらう。親の分離キーも更新される。</li>
+<li><b>マージ</b> — 兄弟も Min しか持たなければ合体し、
+    余ったノードは <code>freePage</code> でフリーリストへ
+    (meta 行の freelist に注目)。</li>
+</ol>
+<p>
+<b>右兄弟</b>への処理は通常の左→右ラッチ順で安全に取れるが、
+<b>左兄弟</b>は順序違反になるため <code>TryLock</code> を使う。
+失敗したら全ラッチを解放して操作を最初からやり直す (デモ B)。
+</p>
+
+<h2>デモ A: 右借用 — 準備 <code>put(45)</code> → <code>del(20)</code></h2>
+<p>L1 [10] がアンダーフロー。右兄弟 L2 [30,40,45] は Min 超過なので
+先頭の 30 を借り、親の分離キーを 40 に更新。</p>
+<div id="dA"></div>
+
+<h2>デモ B: 左借用 + TryLock — 準備 <code>put(45),del(70)</code> → <code>del(60)</code></h2>
+<p>L3 [50] がアンダーフローで右端 (左兄弟しかいない)。
+L2 への <code>TryLock</code> が成功すれば末尾の 45 を借りる。
+<b>2本目のデモは TryLock を意図的に失敗させた演出</b>:
+全ラッチ解放 → 最初からやり直し (再降下ではキー60は既に消え
+<code>found=false</code> だが、削除成功は前回の結果で維持される —
+Go の <code>ok = ok || removed</code> と同じ)。</p>
+<div id="dB1"></div>
+<h3>デモ B': 同じ操作を TryLock 失敗させて再生</h3>
+<div id="dB2"></div>
+
+<h2>デモ C: 右マージ — <code>del(20)</code> (基準木)</h2>
+<p>L1 [10] がアンダーフロー、右兄弟 L2 [30,40] は Min なので借用不可
+→ L2 を L1 に吸収し L2 を解放。親から分離キー 30 と子ポインタが消える。</p>
+<div id="dC"></div>
+
+<h2>デモ D: 左マージ — 準備 <code>del(70)</code> → <code>del(60)</code></h2>
+<p>L3 [50] がアンダーフロー、左兄弟 L2 は Min → L3 を L2 に吸収。</p>
+<div id="dD"></div>
+
+<h2>デモ E: 内部ノードのマージ + ルート縮小 — 高さ3の木で <code>del(20)</code></h2>
+<p>
+葉マージが親をアンダーフローさせると<b>内部ノードのマージ</b>が起きる。
+内部マージでは<b>親の分離キーが子に引き下ろされる</b> (分裂の昇格の逆操作)。
+ルートが子 1 つになれば<b>高さが 1 減る</b> (root shrink)。
+</p>
+<div id="dE"></div>
+
+<script src="../shared/bptree-sim.js"></script>
+<script src="../shared/bptree-viz.js"></script>
+<script src="../shared/topics.js"></script>
+<script>
+const BASE = [10,20,30,40,50,60,70];
+const prepBase = s => { for (const k of BASE) s.put(k, k * 100); };
+const prepA = s => { prepBase(s); s.put(45, 4500); };
+const prepB = s => { prepBase(s); s.put(45, 4500); s.del(70); };
+const prepD = s => { prepBase(s); s.del(70); };
+const prepE = s => {
+  for (const k of BASE.concat([75,80,85,90,95,100])) s.put(k, k * 100);
+};
+
+const CODE = { file: "bptree/tree.go delete() アンダーフロー処理 (抜粋)", lines:
+  src("tree.go", 624,
+`		if ci < pn {
+			// Right sibling exists: latch order left→right is respected.
+			rPID := internalChild(parent.data[:], ci+1)
+			sib, err = t.fetchRetry(rPID)
+			if err != nil {
+				return found, err
+			}
+			sib.latch.Lock()
+			if int(nodeCount(sib.data[:])) > minKeys {
+				// Borrow one entry from the right sibling.
+				if leaf {
+					leafBorrowFromRight(cur.data[:], sib.data[:])
+					internalSetKey(parent.data[:], ci, leafKey(sib.data[:], 0))
+				} else {
+					sep := internalKey(parent.data[:], ci)
+					newSep := internalBorrowFromRight(cur.data[:], sib.data[:], sep)
+					internalSetKey(parent.data[:], ci, newSep)
+				}`).lines.concat(
+  [{ no: 0, text: "… (借用成功なら兄弟・自身・親を解放して終了)" }, { no: 0, text: "" }],
+  src("tree.go", 650,
+`			// Merge right into cur.
+			if leaf {
+				leafMergeInto(cur.data[:], sib.data[:])
+				leafSetNext(cur.data[:], leafNext(sib.data[:]))
+			} else {
+				internalMergeInto(cur.data[:], sib.data[:], internalKey(parent.data[:], ci))
+			}
+			internalRemoveKeyAt(parent.data[:], ci)
+			sibPID := sib.pageID
+			t.release(sib, true)
+			sib = nil
+			t.release(cur, true)
+			cur = nil
+			if err := t.freePage(sibPID); err != nil {
+				return found, err
+			}
+			// Parent lost a child — it may underflow; continue upward.
+			cur = parent
+			parent = nil
+			continue`).lines, [{ no: 0, text: "" }],
+  src("tree.go", 672,
+`		// ci == pn: cur is the rightmost child — only the left sibling exists.
+		lPID := internalChild(parent.data[:], ci-1)
+		sib, err = t.fetchRetry(lPID)
+		if err != nil {
+			return found, err
+		}
+		if !sib.latch.TryLock() {
+			// CRITICAL: sib is pinned but NOT latched here — unpin only,
+			// never Unlock (that would steal another holder's latch or panic).
+			t.pool.unpin(sib, false)
+			sib = nil
+			return found, errRestart
+		}
+		if int(nodeCount(sib.data[:])) > minKeys {
+			// Borrow one entry from the left sibling.
+			if leaf {
+				leafBorrowFromLeft(cur.data[:], sib.data[:])
+				internalSetKey(parent.data[:], ci-1, leafKey(cur.data[:], 0))
+			} else {
+				sep := internalKey(parent.data[:], ci-1)
+				newSep := internalBorrowFromLeft(cur.data[:], sib.data[:], sep)
+				internalSetKey(parent.data[:], ci-1, newSep)
+			}`).lines, [{ no: 0, text: "" }],
+  src("tree.go", 705,
+`		// Merge cur into the left sibling.
+		if leaf {
+			leafMergeInto(sib.data[:], cur.data[:])
+			leafSetNext(sib.data[:], leafNext(cur.data[:]))
+		} else {
+			internalMergeInto(sib.data[:], cur.data[:], internalKey(parent.data[:], ci-1))
+		}
+		internalRemoveKeyAt(parent.data[:], ci-1)
+		curPID := cur.pageID
+		t.release(sib, true)
+		sib = nil
+		t.release(cur, true)
+		cur = nil
+		if err := t.freePage(curPID); err != nil {
+			return found, err
+		}`).lines, [{ no: 0, text: "" }],
+  src("tree.go", 583,
+`			if !leaf && nodeCount(cur.data[:]) == 0 {
+				newRoot := internalChild(cur.data[:], 0)
+				oldPID := cur.pageID
+				t.meta.rootPageID = newRoot
+				t.meta.height--
+				t.release(cur, true)
+				cur = nil
+				if err := t.freePage(oldPID); err != nil {
+					return found, err
+				}`).lines) };
+
+const hl = {
+  "tag:borrow-right": [631, 635, 636, 638, 639, 640],
+  "tag:borrow-left":  [687, 690, 691, 693, 694, 695],
+  "tag:merge-right":  [652, 653, 655, 657, 663],
+  "tag:merge-left":   [707, 708, 710, 712, 718],
+  "merge":            [657, 712],
+  "internalRemove":   [657, 712],
+  "free":             [663, 718],
+  "trylock":          [678],
+  "tag:trylock-fail": [678, 683, 685],
+  "tag:restart":      [685],
+  "tag:root-shrink":  [584, 586, 587, 590],
+  "rootShrink":       [584, 586, 587],
+};
+// デモ E は freePage の呼び出し位置が混在 (葉マージ 663 + ルート縮小 590)
+const hlE = Object.assign({}, hl, { free: [663, 590] });
+
+buildDemo(document.getElementById("dA"), {
+  prep: prepA,
+  caption0: "準備完了: L2 が [30,40,45] (Min超過)。del(20) で L1 がアンダーフローする。",
+  ops: [s => s.del(20)], code: CODE, hl,
+});
+buildDemo(document.getElementById("dB1"), {
+  prep: prepB,
+  caption0: "準備完了: L3 [50,60]、L2 [30,40,45]。del(60) で L3 がアンダーフロー → 左借用。",
+  ops: [s => s.del(60)], code: CODE, hl,
+});
+buildDemo(document.getElementById("dB2"), {
+  prep: prepB,
+  caption0: "同じ準備。TryLock を1回だけ失敗させる注入あり → リスタートが再生される。",
+  ops: [s => s.del(60, { trylockFail: true })], code: CODE, hl,
+});
+buildDemo(document.getElementById("dC"), {
+  prep: prepBase,
+  caption0: "基準木。del(20) → L1[10] アンダーフロー、右兄弟は Min → 右マージ。",
+  ops: [s => s.del(20)], code: CODE, hl,
+});
+buildDemo(document.getElementById("dD"), {
+  prep: prepD,
+  caption0: "準備完了: L3 [50,60]。del(60) → L3[50] アンダーフロー、左兄弟は Min → 左マージ。",
+  ops: [s => s.del(60)], code: CODE, hl,
+});
+buildDemo(document.getElementById("dE"), {
+  prep: prepE,
+  caption0: "準備完了: 高さ3 (root[70] → Ia[30,50], Ib[80,90])。del(20) が連鎖マージを起こす。",
+  ops: [s => s.del(20)], code: CODE, hl: hlE,
+});
+</script>
+</div>
+</body>
+</html>

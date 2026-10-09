@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>木構造の変化 — B+木 KVS 解説</title>
+<link rel="stylesheet" href="../shared/viz.css">
+</head>
+<body class="viz-topic">
+<div class="viz-main">
+<nav class="viz-nav">
+  <a href="merge.html">← マージとノード削除</a>
+  <a href="../index.html">ポータル</a>
+  <a href="../overview.html">全体概観 →</a>
+</nav>
+<h1>7–9. 木構造の変化 (分割 / ノード挿入 / マージ)</h1>
+<p>
+ここまでの操作を<b>木全体の形</b>という観点で見る。
+B+ 木は「葉の一つ上の層」だけでなくルート自身も作り替える:
+分離キーがルートまで伝播すれば<b>新しいルートが上に生え (高さ+1)</b>、
+マージでルートが子 1 つになれば<b>ルートが取り除かれる (高さ−1)</b>。
+高さの変化は必ずルートで起き、木は常に全葉同一深さを保つ。
+</p>
+
+<div class="controls">
+  <button id="tab1" class="tabbtn">① 分割 → 高さ+1</button>
+  <button id="tab2" class="tabbtn">② ノード挿入 → 分岐追加</button>
+  <button id="tab3" class="tabbtn">③ マージ → 高さ−1</button>
+</div>
+
+<section id="s1">
+<h2>① ノード分割にともなう構造変化 — ルート成長</h2>
+<p>
+葉だけの木 (高さ1、ルート=葉) が満杯になると、分裂のあと
+親が存在しないため <code>internalInitRoot</code> で
+<b>新しい内部ルート</b>が作られる。<code>meta.rootPageID</code> が
+差し替わり <code>height++</code>。高さ3への連鎖は
+<a href="split.html">スプリット デモB</a>参照。
+</p>
+<div id="d1"></div>
+</section>
+
+<section id="s2" hidden>
+<h2>② ノード挿入にともなう構造変化 — 親への分岐追加</h2>
+<p>
+葉分裂の結果、親に「分離キー + 子ポインタ」が挿入される
+(<code>internalInsertKeyAt</code>)。
+木に新しい分岐が足され、新葉の担当範囲
+<code>[70,∞)</code> が親に登録されるのが見える。
+(<a href="node-insert.html">ノード挿入</a> と同じ操作を構造面から再生。)
+</p>
+<div id="d2"></div>
+</section>
+
+<section id="s3" hidden>
+<h2>③ ノードマージにともなう構造変化 — ルート縮小</h2>
+<p>
+高さ2の木で葉マージを繰り返すとルートが子 1 つ (キー 0 個) になる。
+その瞬間 <code>meta.rootPageID</code> が唯一の子 (葉) を指し、
+<code>height--</code> で高さ1の葉ルートへ戻る。
+旧ルートと消費された葉はフリーリストへ (meta 行を確認)。
+</p>
+<div id="d3"></div>
+</section>
+
+<script src="../shared/bptree-sim.js"></script>
+<script src="../shared/bptree-viz.js"></script>
+<script src="../shared/topics.js"></script>
+<script>
+// --- タブ切替 ---
+const secs = { tab1: "s1", tab2: "s2", tab3: "s3" };
+for (const [btn, sec] of Object.entries(secs)) {
+  document.getElementById(btn).onclick = () => {
+    for (const s of Object.values(secs))
+      document.getElementById(s).hidden = true;
+    document.getElementById(sec).hidden = false;
+  };
+}
+
+const CODE = { file: "bptree/tree.go + node.go (抜粋)", lines:
+  src("tree.go", 440,
+`	if pending {
+		// The split reached the top: grow a new root (rootMu still held).
+		newRoot, err := t.allocPageRetry()
+		if err != nil {
+			return err
+		}
+		nrf, err := t.fetchRetry(newRoot)
+		if err != nil {
+			return err
+		}
+		nrf.latch.Lock()
+		internalInitRoot(nrf.data[:], sep, leftPID, rightPID)
+		t.meta.rootPageID = newRoot
+		t.meta.height++
+		t.release(nrf, true)
+	}`).lines.concat([{ no: 0, text: "" }],
+  src("tree.go", 414,
+`		if nodeCount(parent.data[:]) < MaxInternalKeys {
+			internalInsertKeyAt(parent.data[:], ci, sep, rightPID)
+			t.release(parent, true)`).lines, [{ no: 0, text: "" }],
+  src("tree.go", 705,
+`		// Merge cur into the left sibling.
+		if leaf {
+			leafMergeInto(sib.data[:], cur.data[:])
+			leafSetNext(sib.data[:], leafNext(cur.data[:]))
+		} else {
+			internalMergeInto(sib.data[:], cur.data[:], internalKey(parent.data[:], ci-1))
+		}
+		internalRemoveKeyAt(parent.data[:], ci-1)
+		curPID := cur.pageID
+		t.release(sib, true)
+		sib = nil
+		t.release(cur, true)
+		cur = nil
+		if err := t.freePage(curPID); err != nil {
+			return found, err
+		}`).lines, [{ no: 0, text: "" }],
+  src("tree.go", 583,
+`			if !leaf && nodeCount(cur.data[:]) == 0 {
+				newRoot := internalChild(cur.data[:], 0)
+				oldPID := cur.pageID
+				t.meta.rootPageID = newRoot
+				t.meta.height--
+				t.release(cur, true)
+				cur = nil
+				if err := t.freePage(oldPID); err != nil {
+					return found, err
+				}`).lines) };
+
+const hl = {
+  "tag:root-grow":   [452, 453, 454],
+  "rootGrow":        [452, 453, 454],
+  "tag:root-shrink": [584, 586, 587, 590],
+  "rootShrink":      [584, 586, 587],
+  "internalInsert":  [415],
+  "copyUp":          [415],
+  "tag:propagate":   [414, 415],
+  "internalRemove":  [712],
+  "free":            [590, 718],
+  "tag:merge-left":  [707, 708, 712, 718],
+};
+
+buildDemo(document.getElementById("d1"), {
+  prep: s => { for (const k of [10,20,30,40]) s.put(k, k * 100); },
+  caption0: "準備完了: 高さ1、ルートは葉 [10,20,30,40] (満杯)。put(50) で分裂 → 新ルート誕生。",
+  ops: [s => s.put(50, 5000)], code: CODE, hl,
+});
+buildDemo(document.getElementById("d2"), {
+  prep: s => { for (const k of [10,20,30,40,50,60,70,75]) s.put(k, k * 100); },
+  caption0: "準備完了: ルート [30,50] 3子。put(80) で親に分岐が1つ増える。",
+  ops: [s => s.put(80, 8000)], code: CODE, hl,
+});
+buildDemo(document.getElementById("d3"), {
+  prep: s => { for (const k of [10,20,30,40,50]) s.put(k, k * 100); },
+  caption0: "準備完了: 高さ2、ルート [30] → L1[10,20], L2[30,40,50]。del(40),del(50) でルート縮小へ。",
+  ops: [s => s.del(40), s => s.del(50)], code: CODE, hl,
+});
+</script>
+</div>
+</body>
+</html>

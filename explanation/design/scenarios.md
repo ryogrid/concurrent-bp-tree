@@ -105,8 +105,8 @@ root [70]
 - デモ B (左借用 + TryLock): 準備 = 基準木 + `put(45)` + `del(70)` →
   L3 [50,60]。`del(60)` → L3 [50] アンダーフロー、ci=pn →
   左兄弟 L2 [30,40,45] に `TryLock` → 成功時 `leafBorrowFromLeft`:
-  45 を L3 先頭へ → L3[45,50], 親 sep[1] = 45 → root [40,45]。
-  **失敗演出**: `{ inject: "trylock-fail" }` で 1 回目失敗 →
+  45 を L3 先頭へ → L3[45,50], 親 sep[1] = 45 → root [30,45]。
+  **失敗演出**: `del(60, { trylockFail: true })` で 1 回目失敗 →
   全ラッチ解放 → `errRestart` → 操作最初から。**注意点として明示**:
   リトライ2回目の降下ではキー 60 は既に消えている (`found=false`) が、
   `Delete` は `ok = ok || removed` で削除成功を返し、残った
