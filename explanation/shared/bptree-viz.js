@@ -19,12 +19,17 @@
   }
 
   // 木レイアウト: 葉を左→右に等間隔、内部ノードは子の重心。x = ノード左端。
+  // ルートにまだ接続されていない一時ノード群 (分裂直後・未配線の新部分木や
+  // freePage 直前のマージ犠牲ノード) は木の下の「孤立レーン」に
+  // ミニ木として配置し破線枠で示す — 配置しないとそのノードも接続線も
+  // 描画できず、分裂/マージの途中状態が見えなくなる。
   function layout(nodes, rootId) {
-    const pos = new Map(); let leafX = LEFT;
+    const pos = new Map(); let leafX = LEFT; let maxLevel = 0;
     const rec = (id, level) => {
       const n = nodes[id]; if (!n) return 0;
       const w = nodeWidth(n);
       const y = TOP + level * LEVEL_H;
+      maxLevel = Math.max(maxLevel, level);
       if (n.leaf) {
         pos.set(id, { x: leafX, y, w });
         leafX += w + NODE_GAP; return leafX - NODE_GAP - w / 2;
@@ -35,7 +40,18 @@
       return cx;
     };
     if (rootId) rec(rootId, 0);
-    return { pos, width: leafX + LEFT };
+    // 孤立ノード群: 未到達のものを順に「孤立木の根」として下段に再帰配置
+    const detached = new Set();
+    const orphanBase = maxLevel + 1;
+    for (const id of Object.keys(nodes)) {
+      if (pos.has(id)) continue;
+      const before = new Set(pos.keys());
+      rec(id, orphanBase);
+      for (const k of pos.keys()) if (!before.has(k)) detached.add(k);
+    }
+    let maxY = 0;
+    for (const p of pos.values()) maxY = Math.max(maxY, p.y);
+    return { pos, detached, width: leafX + LEFT, height: maxY + 70 };
   }
 
   class BptreeViz {
@@ -59,8 +75,9 @@
       const st = step.state;
       const latchMarks = step.marks || {};
       const statuses = step.statuses || {};
-      const { pos, width } = layout(st.nodes, st.root);
+      const { pos, detached, width, height } = layout(st.nodes, st.root);
       this.canvas.style.width = Math.max(width, this.canvas.parentElement.clientWidth || 0) + "px";
+      this.canvas.style.height = height + "px";
       this.canvas.parentElement.scrollLeft = 0;
 
       // --- FLIP first: 現在位置を記録 ---
@@ -71,11 +88,16 @@
       const canvasRect = rect(this.canvas);
 
       // --- ノード DOM 更新 ---
-      const statusCls = { visited: "visited", target: "target", underflow: "underflow" };
+      const statusCls = { visited: "visited", target: "target",
+        underflow: "underflow", freed: "freed" };
       const seenNodes = new Set();
       this.wanted = new Set();                    // 全ノードが要求するセルid
       for (const id of Object.keys(st.nodes)) {
-        const n = st.nodes[id]; const p = pos.get(id); if (!p) continue;
+        const n = st.nodes[id];
+        const dying = statuses[id] === "freed";
+        // マージ対象は state に残る間は元の位置に留めてフェード
+        const p = (dying && this.lastPos.has(id))
+          ? this.lastPos.get(id) : pos.get(id);
         seenNodes.add(id);
         let e = this.nodes.get(id);
         if (!e) {
@@ -91,21 +113,29 @@
           el.style.opacity = "";
         }
         const el = e.el; e.node = n;
+        e.dying = dying; e.ghosted = false;   // 復活したらフラグを戻す
         el.className = "bp-node " + (n.leaf ? "leaf" : "internal") +
-          (statusCls[statuses[id]] ? " " + statusCls[statuses[id]] : "");
+          (statusCls[statuses[id]] ? " " + statusCls[statuses[id]] : "") +
+          (detached.has(id) ? " detached" : "");
         el.style.left = p.x + "px"; el.style.top = p.y + "px";
         el.style.width = p.w + "px"; el.style.height = "30px";
         this.lastPos.set(id, p);
-        this.syncCells(id, n, el);
-        this.syncBadges(id, n, el, latchMarks);
+        if (!dying) {
+          this.syncCells(id, n, el);
+          this.syncBadges(id, n, el, latchMarks);
+        } else {
+          // セルは吸収先へ飛ぶ (wanted 掃除で未移動分は消える)
+          el.querySelectorAll(".latch-badge").forEach(b => b.remove());
+        }
       }
-      // 消えたノード: freed 演出 (state.nodes に無いが直前まで存在)
+      // 消えたノード: freePage で解放されたものだけ 1 ステップ freed
+      // ゴーストで残す (◀戻しで「未誕生ノード」が消える場合は即削除)。
       for (const [id, e] of this.nodes) {
         if (seenNodes.has(id)) continue;
-        if (statuses[id] === "freed" && this.lastPos.has(id)) {
-          e.el.classList.add("freed");            // 破線・透過で1ステップ残す
-          const lch = e.el.querySelectorAll(".latch-badge");
-          lch.forEach(b => b.remove());
+        if (e.dying && !e.ghosted && this.lastPos.has(id)) {
+          e.el.classList.add("freed");
+          e.ghosted = true;
+          e.el.querySelectorAll(".latch-badge").forEach(b => b.remove());
         } else {
           for (const [cid, c] of [...this.cells])
             if (c.nodeId === id) this.cells.delete(cid);
@@ -124,12 +154,16 @@
       this.flipCells(before, canvasRect);
 
       // --- エッジ ---
-      this.drawEdges(st, pos, seenNodes);
+      const deadIds = new Set(Object.keys(statuses)
+        .filter(id => statuses[id] === "freed"));
+      this.drawEdges(st, pos, seenNodes, deadIds);
+      this.lastStepStatuses = statuses;
       // --- メタ行 ---
       this.meta.innerHTML =
         `root=<b>${st.root}</b> height=<b>${st.height}</b> ` +
         `freelist=<b>[${st.freelist.join(",")}]</b> nextPID=<b>${st.nextPID}</b>`;
       this.canvas.setAttribute("data-caption", step.caption || "");
+      this.lastStepState = st;
       return step.caption;
     }
 
@@ -211,25 +245,27 @@
       }
     }
 
-    drawEdges(st, pos, seen) {
+    drawEdges(st, pos, seen, deadIds) {
       while (this.svg.firstChild) this.svg.removeChild(this.svg.firstChild);
       const H = 30;
+      deadIds = deadIds || new Set();
       for (const id of seen) {
-        const n = st.nodes[id]; if (!n || n.leaf) continue;
+        const n = st.nodes[id]; if (!n || n.leaf || deadIds.has(id)) continue;
         const p = pos.get(id);
         for (const cid of n.children) {
           const cp = pos.get(cid); if (!cp) continue;
           line(this.svg, p.x + p.w / 2, p.y + H, cp.x + cp.w / 2, cp.y);
         }
       }
-      // 葉チェーン (next はノード id 文字列)
+      // 葉チェーン (next はノード id 文字列)。
+      // freed ノードからの stale next は出さない (消える側の旧リンク)。
       for (const id of seen) {
         const n = st.nodes[id];
-        if (n && n.leaf && n.next && seen.has(n.next)) {
+        if (n && n.leaf && n.next && seen.has(n.next) && !deadIds.has(id)) {
           const a = pos.get(id), b = pos.get(n.next);
           if (a && b) {
-            const y = a.y + H + 14;
-            arrow(this.svg, a.x + a.w / 2, y, b.x + b.w / 2, y);
+            arrow(this.svg,
+              a.x + a.w / 2, a.y + H + 14, b.x + b.w / 2, b.y + H + 14);
           }
         }
       }
@@ -263,10 +299,17 @@
     l.setAttribute("stroke", "#4a5d75"); l.setAttribute("stroke-width", "1.5");
     svg.appendChild(l);
   }
-  function arrow(svg, x1, y, x2) {
-    line(svg, x1, y, x2, y);
+  function arrow(svg, x1, y1, x2, y2) {
+    line(svg, x1, y1, x2, y2);
+    // 矢印: 進行方向に向いた三角 (斜めも対応)
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;           // 単位ベクトル
+    const px = -uy, py = ux;                      // 法線
     const t = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-    t.setAttribute("points", `${x2},${y} ${x2 - 6},${y - 3} ${x2 - 6},${y + 3}`);
+    t.setAttribute("points",
+      `${x2},${y2} ${x2 - ux * 7 + px * 3.5},${y2 - uy * 7 + py * 3.5} ` +
+      `${x2 - ux * 7 - px * 3.5},${y2 - uy * 7 - py * 3.5}`);
     t.setAttribute("fill", "#3fb97f"); svg.appendChild(t);
   }
 

@@ -197,6 +197,33 @@ for (const f of topicFiles) {
       demos++;
       for (let i = 0; i < el._mount.count; i++) {
         el._mount.show(i);
+        const viz = el._mount.viz;
+        const st = el._mount.viz.lastStepState;
+        if (st) {
+          // 全ノードが描画されている (未接続の一時ノードも孤立レーンに出る。
+          // freed ゴーストは state に無いので除外して数える)
+          const live = [...viz.nodes.keys()]
+            .filter(id => st.nodes[id]).length;
+          assert.strictEqual(live, Object.keys(st.nodes).length,
+            `${f} step${i}: 描画ノード数が state と不一致`);
+          // 接続線: 内部辺 + 葉チェーン辺がすべて描画されているか
+          // (freed マーク済みノードからの stale 辺は仕様上描画しない)
+          const dead = viz.lastStepStatuses
+            ? new Set(Object.keys(viz.lastStepStatuses)
+                .filter(i => viz.lastStepStatuses[i] === "freed"))
+            : new Set();
+          let wantLines = 0;
+          for (const id in st.nodes) {
+            if (dead.has(id)) continue;
+            const n = st.nodes[id];
+            if (!n.leaf) wantLines += n.children.length;
+            else if (n.next && st.nodes[n.next]) wantLines += 1;
+          }
+          const drawnLines = viz.svg.children
+            .filter(c => c.tagName === "line").length;
+          assert.strictEqual(drawnLines, wantLines,
+            `${f} step${i}: 描画エッジ数不一致 (${drawnLines} != ${wantLines})`);
+        }
         // セル所有関係: 各ノードのセル DOM は想定どおりの数だけ存在するか
         // (NX:/C:/S: セルidがノードキーで衝突しないことの検査)
         for (const [nid, e] of el._mount.viz.nodes) {
