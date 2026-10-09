@@ -220,9 +220,14 @@ class BptreeSim {
       this.emit({ t: "descend", from: cur.id(), ci, to: child.id() });
       this.latch(child, "R");
       this.step("descend",
-        `key=${key}: internalFindChildIdx → child[${ci}] = p${child.pid}。子を R ラッチしてから親を解放 (カップリング)。`,
+        `key=${key}: internalFindChildIdx → child[${ci}] = p${child.pid} を R ラッチ。` +
+        `この瞬間だけ親 p${cur.pid} と子の両方がラッチ中 (カップリングの瞬間)。`,
         { [cur.id()]: "visited", [child.id()]: "target" });
       this.unlatch(cur);
+      this.step("release-parent",
+        `親 p${cur.pid} を RUnlock + Unpin → 保持は子 p${child.pid} のみ。` +
+        `同時に持つ R ラッチは最大「親子 2 枚」。`,
+        { [cur.id()]: "visited", [child.id()]: "target" });
       cur = child;
     }
     const [pos, found] = this.leafFindPos(cur, key);
@@ -245,7 +250,9 @@ class BptreeSim {
     //  デモ規模では到達しないため省略)
     this.step("latch-root",
       `rootMu.Lock でルート差し替えを直列化 → ルート p${cur.pid} を W ラッチ。` +
-      (this.safeForInsert(cur) ? " ルートは安全 → rootMu は早期解放。" : " ルートは分裂し得る → rootMu 保持。"));
+      (this.safeForInsert(cur)
+        ? " ルートは安全 → rootMu はここで早期解放 (ルートの W ラッチは保持したまま降下)。"
+        : " ルートは分裂し得る → rootMu も保持。"));
     const held = [];
     while (!cur.leaf) {
       const ci = this.internalFindChildIdx(cur, key);
@@ -267,7 +274,10 @@ class BptreeSim {
         }
         held.push({ n: cur, ci });
         this.step("descend-unsafe",
-          `child[${ci}] p${cf.pid} は満杯 → 分裂が伝播し得るので親を保持 (held に積む)。`,
+          `child[${ci}] p${cf.pid} は満杯 → 分裂が伝播し得るので親 p${cur.pid} を保持` +
+          (held.length > 1
+            ? ` (held の祖先 ${held.length - 1} 枚も保持したまま降下)。`
+            : ` (held に積む)。`),
           { [cf.id()]: "target" });
       }
       cur = cf;
@@ -377,7 +387,9 @@ class BptreeSim {
     this.latch(cur, "W");
     this.step("latch-root",
       `rootMu.Lock → ルート p${cur.pid} を W ラッチ。` +
-      (this.safeForDelete(cur) ? " 安全 → rootMu 早期解放。" : " アンダーフローし得る → rootMu 保持。"));
+      (this.safeForDelete(cur)
+        ? " 安全 → rootMu はここで早期解放 (ルートの W ラッチは保持したまま降下)。"
+        : " アンダーフローし得る → rootMu も保持。"));
     const held = [];
     while (!cur.leaf) {
       const ci = this.internalFindChildIdx(cur, key);
@@ -398,7 +410,10 @@ class BptreeSim {
         }
         held.push({ n: cur, ci });
         this.step("descend-unsafe",
-          `child[${ci}] p${cf.pid} は Min → アンダーフローし得るので親を保持。`,
+          `child[${ci}] p${cf.pid} は Min 以下 → アンダーフローが伝播し得るので親 p${cur.pid} を保持` +
+          (held.length > 1
+            ? ` (held の祖先 ${held.length - 1} 枚も保持したまま降下)。`
+            : ` (held に積む)。`),
           { [cf.id()]: "target" });
       }
       cur = cf;
@@ -427,10 +442,11 @@ class BptreeSim {
           const old = cur;
           this.root = newRoot; this.height--;
           this.emit({ t: "rootShrink", old: old.id(), newRoot: newRoot.id() });
-          this.step("root-shrink",
-            `ルートが 0 キー 1 子の内部ノード → meta.root = 子 p${newRoot.pid}, height=${this.height}。旧ルートはフリーリストへ。`,
-            { [newRoot.id()]: "target", [old.id()]: "freed" });
+          // Go: meta 更新 → release(旧root) → freePage (tree.go:586-590)
           this.unlatch(old);
+          this.step("root-shrink",
+            `ルートが 0 キー 1 子の内部ノード → meta.root = 子 p${newRoot.pid}, height=${this.height}。旧ルートは解放→フリーリストへ。`,
+            { [newRoot.id()]: "target", [old.id()]: "freed" });
           this.freePage(old);
           cur = null;
         } else {
@@ -475,11 +491,12 @@ class BptreeSim {
           this.internalMergeInto(cur, sib, parent.keys[ci]);
         }
         this.internalRemoveKeyAt(parent, ci);
+        // Go: マージ完了直後に sib/cur を解放 → freePage へ (tree.go:659-665)
+        this.unlatch(sib); this.unlatch(cur);
         this.step("merge-right",
           `右兄弟も Min → マージ: p${sib.pid} を p${cur.pid} に吸収${leaf ? "、nextLeafPID 引継ぎ" : " (分離キーを引き下ろす)"}。` +
-          `親から (key,child) を削除 → [${parent.keys.join(",")}]。p${sib.pid} は freePage。`,
+          `親から (key,child) を削除 → [${parent.keys.join(",")}]。p${sib.pid} は解放→freePage。`,
           { [cur.id()]: "target", [sib.id()]: "freed", [parent.id()]: "target" });
-        this.unlatch(sib); this.unlatch(cur);
         this.freePage(sib);
         cur = parent;
         continue;
@@ -517,11 +534,12 @@ class BptreeSim {
         this.internalMergeInto(sib, cur, parent.keys[ci - 1]);
       }
       this.internalRemoveKeyAt(parent, ci - 1);
+      // Go: マージ完了直後に sib/cur を解放 → freePage へ (tree.go:714-720)
+      this.unlatch(sib); this.unlatch(cur);
       this.step("merge-left",
         `左兄弟に自分を吸収: p${cur.pid} → p${sib.pid}${leaf ? "、nextLeafPID 引継ぎ" : " (分離キー引き下ろし)"}。` +
-        `親から削除 → [${parent.keys.join(",")}]。p${cur.pid} は freePage。`,
+        `親から削除 → [${parent.keys.join(",")}]。p${cur.pid} は解放→freePage。`,
         { [sib.id()]: "target", [cur.id()]: "freed", [parent.id()]: "target" });
-      this.unlatch(sib); this.unlatch(cur);
       this.freePage(cur);
       cur = parent;
     }

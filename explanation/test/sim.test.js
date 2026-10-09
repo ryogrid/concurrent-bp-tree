@@ -257,3 +257,56 @@ test("freelist reuse: freed page is reallocated", () => {
   assert.strictEqual(sim.nextPID, before, "nextPID should not grow on reuse");
   checkInvariants(sim);
 });
+
+test("get: 降下中の同時 R ラッチは親子 2 枚が上限 (カップリング)", () => {
+  const sim = new BptreeSim();
+  // 40件挿入で高さ3以上 (内部ノードが多段) の木
+  for (let i = 1; i <= 40; i++) sim.put(i * 10, i);
+  assert.ok(sim.height >= 3, `height=${sim.height} should be >=3`);
+  const { steps } = sim.get(150);
+  let sawCouple = false, sawRelease = false;
+  for (const st of steps) {
+    const n = Object.keys(st.marks).length;
+    assert.ok(n <= 2, `get の ${st.tag} ステップで ${n} 枚ラッチ`);
+    if (st.tag === "descend") {
+      assert.strictEqual(n, 2, "カップリングの瞬間は親子 2 枚");
+      sawCouple = true;
+    }
+    if (st.tag === "release-parent") {
+      assert.strictEqual(n, 1, "親解放後は子のみ保持");
+      sawRelease = true;
+    }
+  }
+  assert.ok(sawCouple && sawRelease,
+    "descend(双方ラッチ) → release-parent(親解放) の両方を踏むこと");
+  checkInvariants(sim);
+});
+
+test("del: unsafe 祖先はラッチを保持したまま降下 (3枚保持は正しい動作)", () => {
+  const sim = new BptreeSim();
+  for (const k of [10,20,30,40,50,60,70,75,80,85,90,95,100])
+    sim.put(k, k * 100);
+  const { steps } = sim.del(20);  // merge.html デモ E と同じ木
+  // 高さ3 → 降下中に root+中間+葉 の 3 枚 W ラッチを同時保持するステップがある
+  const deep = steps.filter(s => s.tag === "descend-unsafe" &&
+    Object.keys(s.marks).length === 3);
+  assert.ok(deep.length > 0, "高さ3の unsafe 降下で 3 枚保持が見えるはず");
+  // どのステップも、キャプションがラッチ「解放」を謳うなら保持数は減っている
+  // こと。freed ステータスのノードは可視化上バッジが消えるので保持数から除く。
+  for (const st of steps) {
+    if (/全解放|一括解放|解放 →|を解放/.test(st.caption)) {
+      const held = Object.keys(st.marks)
+        .filter(id => st.statuses[id] !== "freed");
+      assert.ok(held.length <= 1 || /保持/.test(st.caption),
+        `${st.tag}: 「解放」と言いつつ ${JSON.stringify(st.marks)} を保持`);
+    }
+    // freed ノードのラッチは必ず先に解放済み (可視化はバッジを消すので
+    // marks に残ると「幽霊ノードがラッチ中」に見える)
+    for (const [id, status] of Object.entries(st.statuses)) {
+      if (status === "freed") {
+        assert.ok(!(id in st.marks), `${st.tag}: freed ${id} がまだラッチ中`);
+      }
+    }
+  }
+  checkInvariants(sim);
+});
