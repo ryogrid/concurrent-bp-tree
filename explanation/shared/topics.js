@@ -55,13 +55,14 @@
     return sim;
   }
 
-  // Go ソース抜粋を {no,text} 行配列にする簡易 DSL:
-  //   src("tree.go", 245, `func (t *Tree) get...`) — 連番を振る
+  // Go ソース抜粋を {no,text,file} 行配列にする簡易 DSL:
+  //   src("tree.go", 245, `func (t *Tree) get...`) — 連番を振る。
+  //   file は mountTopic が行番号の GitHub リンク生成に使う。
   function src(file, start, text) {
     return {
       file,
       lines: text.replace(/\n$/, "").split("\n")
-        .map((t, i) => ({ no: start + i, text: t })),
+        .map((t, i) => ({ no: start + i, text: t, file })),
     };
   }
 

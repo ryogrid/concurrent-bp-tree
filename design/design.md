@@ -83,7 +83,7 @@ idx:  0      1        2            3      4      5      6
 ## 3. パッケージ構成
 
 ```
-module github.com/ryogrid/concurrent-bp-tree-tutrial
+module github.com/ryogrid/concurrent-bp-tree
 
 bptree/
   const.go     — PageSize / BufferPoolFrames / MaxTreeHeight / 容量定数 / エラー

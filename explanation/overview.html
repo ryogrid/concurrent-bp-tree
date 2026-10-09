@@ -34,6 +34,9 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px;
 table { border-collapse: collapse; font-size: 13px; margin: 10px 0; }
 th, td { border: 1px solid var(--line); padding: 5px 12px; }
 th { background: var(--panel2); }
+a.gh { color: inherit; text-decoration: none;
+  border-bottom: 1px dotted var(--accent); }
+a.gh:hover { border-bottom-style: solid; }
 
 .anim { background: var(--panel); border: 1px solid var(--line);
   border-radius: 10px; padding: 14px; margin: 14px 0; }
@@ -104,7 +107,7 @@ svg text { font-family: "SF Mono", "Consolas", monospace; }
 
 <section id="overview">
 <h2>0. 概要</h2>
-<p><code>github.com/ryogrid/concurrent-bp-tree-tutrial/bptree</code> は、
+<p><a href="https://github.com/ryogrid/concurrent-bp-tree/tree/master/bptree" target="_blank" rel="noopener"><code>github.com/ryogrid/concurrent-bp-tree/bptree</code></a> は、
 古典的 B+ 木を単一ファイルに永続化する Go の key-value ストア。key / value は
 int64 固定、ページサイズ 8KiB、WAL なし。並行性は<b>ノード単位のラッチ
 (読み書きロック) + ラッチクラビング</b>で実現し、木全体をロックしない。</p>
@@ -205,6 +208,7 @@ dirty なら先にディスクへ書き戻してから読込。全フレーム�
 
 </main>
 
+<script src="shared/gh-links.js"></script>
 <script>
 "use strict";
 const NS = "http://www.w3.org/2000/svg";

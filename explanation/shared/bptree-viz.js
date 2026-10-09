@@ -326,12 +326,21 @@
 
     // コードパネル構築
     if (cfg.code && codeEl) {
-      codeEl.innerHTML = `<div class="file">${cfg.code.file}</div>`;
+      // ヘッダ中の *.go ファイル名を GitHub リンク化
+      const headHtml = esc(cfg.code.file).replace(/[\w./-]+\.go/g,
+        m => `<a class="gh" href="${ghFileURL(m)}" ` +
+             `target="_blank" rel="noopener">${m}</a>`);
+      codeEl.innerHTML = `<div class="file">${headHtml}</div>`;
       const pre = document.createElement("pre");
       for (const l of cfg.code.lines) {
         const s = document.createElement("span");
         s.className = "ln"; s.dataset.no = l.no;
-        s.innerHTML = `<span class="no">${l.no}</span>` + esc(l.text);
+        // 行番号は GitHub の #L 行へのリンク (出典ファイルは src() が付与)
+        const noHtml = l.file && l.no > 0
+          ? `<a class="no gh" href="${ghFileURL(l.file)}#L${l.no}" ` +
+            `target="_blank" rel="noopener">${l.no}</a>`
+          : `<span class="no">${l.no}</span>`;
+        s.innerHTML = noHtml + esc(l.text);
         pre.appendChild(s);
       }
       codeEl.appendChild(pre);
@@ -374,6 +383,13 @@
 
   function esc(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // GitHub ソースビュー URL (gh-links.js 非読込ページでも動くよう自前で保持)
+  const GH_BLOB =
+    "https://github.com/ryogrid/concurrent-bp-tree/blob/master/";
+  function ghFileURL(f) {
+    return GH_BLOB + (f.startsWith("bptree/") ? f : "bptree/" + f);
   }
 
   /* sim の steps にコードハイライト情報を付けるヘルパ。

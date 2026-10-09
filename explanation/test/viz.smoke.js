@@ -56,10 +56,16 @@ class El {
   setAttribute(k, v) { this.attrs[k] = v; }
   getAttribute(k) { return this.attrs[k]; }
   querySelectorAll(sel) {
-    const out = []; const cls = sel.replace(".", "");
+    const out = [];
+    const isCls = sel.startsWith(".");
+    const key = isCls ? sel.slice(1) : sel;
+    const match = c => c._cls &&
+      (isCls ? c._cls.has(key)
+             : c._cls.has(key) ||
+               String(c.tagName).toUpperCase() === key.toUpperCase());
     const walk = e => {
       for (const c of e.children) {
-        if (c._cls && c._cls.has(cls)) out.push(c);
+        if (match(c)) out.push(c);
         walk(c);
       }
     }; walk(this); return out;
@@ -170,6 +176,98 @@ test("viz: コードパネルのハイライト反映", () => {
   });
   const hls = root.querySelectorAll("ln").filter(e => e._cls.has("hl"));
   assert.strictEqual(hls.length, 2);
+});
+
+// ---------- GitHub リンク生成 (gh-links.js) ----------
+vm.runInThisContext(fs.readFileSync(
+  path.join(__dirname, "../shared/gh-links.js"), "utf8"));
+
+test("gh-links: <code> シンボルが GitHub 行リンクで包まれる", () => {
+  const root = new El("div");
+  const p = new El("p"); root.appendChild(p);
+  const c1 = new El("code"); c1.textContent = "leafFindPos"; p.appendChild(c1);
+  const c2 = new El("code"); c2.textContent = "leafInsertAt(b, pos, k, v)";
+  p.appendChild(c2);
+  const c3 = new El("code"); c3.textContent = "[30,50]"; p.appendChild(c3);
+  const c4 = new El("code");
+  c4.textContent = "Put / Get / Delete / RangeScan(start,end)";
+  p.appendChild(c4);
+  const c5 = new El("code"); c5.textContent = "tree.go"; p.appendChild(c5);
+  const c6 = new El("code"); c6.textContent = "meta.rootPageID";
+  p.appendChild(c6);
+  const c7 = new El("code"); c7.textContent = "height--"; p.appendChild(c7);
+  const c8 = new El("code"); c8.textContent = "nextPageID++";
+  p.appendChild(c8);
+  const c9 = new El("code"); c9.textContent = "count < MinLeafPairs";
+  p.appendChild(c9);
+  const c10 = new El("code");
+  c10.textContent = "allocPageRetry → fetchRetry → latch";
+  p.appendChild(c10);
+  linkSymbols(root);
+  const anchors = p.children.filter(c => c.tagName === "a");
+  assert.strictEqual(anchors.length, 7,
+    "leafFindPos/leafInsertAt/tree.go/meta.rootPageID/height--/nextPageID++/MinLeafPairs の7つだけリンク化");
+  const href = i => anchors[i].attrs.href;
+  assert.strictEqual(href(0),
+    "https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/node.go#L61");
+  assert.strictEqual(href(1),
+    "https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/node.go#L77");
+  assert.strictEqual(href(2),
+    "https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/tree.go");
+  assert.strictEqual(href(3),
+    "https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/meta.go#L16");
+  assert.strictEqual(href(4),   // height-- → meta.height
+    "https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/meta.go#L17");
+  assert.strictEqual(href(5),   // nextPageID++ → nextPageID
+    "https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/meta.go#L19");
+  assert.strictEqual(href(6),   // 複合式中の唯一シンボル MinLeafPairs
+    "https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/const.go#L33");
+  // 非シンボル・複数シンボル列挙・複数シンボル複合式はリンク化されない
+  assert.strictEqual(p.children.filter(c => c.tagName === "code" &&
+    (!c.parentElement || c.parentElement.tagName !== "a")).length, 3);
+});
+
+test("gh-links: .file ヘッダの *.go 名が GitHub リンク化", () => {
+  const root = new El("div");
+  const f1 = new El("div"); f1._cls.add("file");
+  f1.textContent = "bptree/tree.go — put()（要約）";
+  root.appendChild(f1);
+  const f2 = new El("div"); f2._cls.add("file");
+  f2.textContent = "bptree/node.go · freelist.go (抜粋)";
+  root.appendChild(f2);
+  const f3 = new El("div"); f3._cls.add("file");
+  f3.innerHTML = '<a href="x">linked</a>';  // 既リンク済み → スキップ
+  const inner = new El("a"); inner.attrs.href = "x"; inner.textContent = "linked";
+  f3.appendChild(inner); f3._html = "";
+  root.appendChild(f3);
+  linkFileHeads(root);
+  assert.ok(f1._html.includes(
+    'href="https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/tree.go"'),
+    "bptree/tree.go が blob URL にリンク化される");
+  assert.ok(f2._html.includes("blob/master/bptree/node.go") &&
+    f2._html.includes("blob/master/bptree/freelist.go"),
+    "複数ファイル名が個別にリンク化される");
+  assert.strictEqual(f3._html, "", "リンク済み .file は再処理されない");
+});
+
+test("viz: コードパネルの行番号とファイル名が GitHub リンク", () => {
+  const sim = new BptreeSim();
+  const { steps } = sim.put(10, 10);
+  const { root } = mkStage();
+  mountTopic(root, {
+    steps,
+    code: { file: "bptree/tree.go + node.go (抜粋)",
+      lines: [{ no: 297, text: "func put", file: "tree.go" },
+              { no: 0, text: "…" }] },
+  });
+  const panel = root.querySelectorAll("codepanel")[0];
+  assert.ok(panel._html.includes(
+    "blob/master/bptree/tree.go"), ".file ヘッダのリンクが無い");
+  const ln = panel.querySelectorAll("ln")
+    .map(e => e._html).join("\n");
+  assert.ok(ln.includes("blob/master/bptree/tree.go#L297"),
+    "行番号の #L リンクが無い");
+  assert.ok(!ln.includes("#L0"), "セパレータ行にリンクが付いている");
 });
 
 // ---------- 全トピックページをシム上で実行 ----------
