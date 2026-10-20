@@ -22,9 +22,10 @@ type Tree struct {
 	disk *diskManager
 	pool *bufferPool
 
-	meta   meta
-	rootMu sync.RWMutex
-	metaMu sync.Mutex
+	meta        meta
+	rootMu      sync.RWMutex
+	metaMu      sync.Mutex
+	metaWriteMu sync.Mutex // serializes snapshot + page-0 publication
 
 	opSlots chan struct{} // concurrency gate (maxConcurrentOps)
 
@@ -99,6 +100,8 @@ func (t *Tree) initEmpty() error {
 // Call contract: must be invoked with NEITHER rootMu nor metaMu held.
 // It snapshots meta under rootMu.RLock -> metaMu.Lock (in that order).
 func (t *Tree) writeMeta() error {
+	t.metaWriteMu.Lock()
+	defer t.metaWriteMu.Unlock()
 	t.rootMu.RLock()
 	t.metaMu.Lock()
 	m := t.meta
@@ -330,13 +333,11 @@ func (t *Tree) put(key, value int64) (err error) {
 	cur.latch.Lock()
 
 	// If the root cannot split, rootPageID cannot change — release rootMu
-	// early so other ops can start. If it can split and the tree is already
-	// at max height, bail before any mutation.
+	// early so other ops can start. The height limit is checked only after
+	// descent establishes that a new root is actually needed.
 	if safeForInsert(cur.data[:]) {
 		t.rootMu.Unlock()
 		rootHeld = false
-	} else if t.meta.height >= MaxTreeHeight {
-		return ErrMaxTreeHeight
 	}
 
 	// Descend, W-latching. An ancestor stays latched iff the child below it
@@ -387,6 +388,12 @@ func (t *Tree) put(key, value int64) (err error) {
 			rootHeld = false
 		}
 		return nil
+	}
+
+	// Reject only an actual split propagating through every ancestor. A full
+	// root alone does not prevent overwrites or insertion into a safe subtree.
+	if rootHeld && t.meta.height >= MaxTreeHeight && int64(len(held.frames)) == t.meta.height-1 {
+		return ErrMaxTreeHeight
 	}
 
 	// Leaf split: build 511 pairs in scratch, 255 stay / 256 go right.
@@ -479,7 +486,7 @@ func (t *Tree) Delete(key int64) (bool, error) {
 		var e error
 		var removed bool
 		removed, e = t.delete(key)
-		ok = ok || removed // a key removed by a previous retry stays removed
+		ok = removed // restart attempts restore the leaf before releasing latches
 		return e
 	})
 	if werr := t.writeMeta(); werr != nil && err == nil {
@@ -548,7 +555,9 @@ func (t *Tree) delete(key int64) (bool, error) {
 
 	// cur is the W-latched leaf.
 	pos, found := leafFindPos(cur.data[:], key)
+	var removedValue int64
 	if found {
+		removedValue = leafVal(cur.data[:], pos)
 		leafRemoveAt(cur.data[:], pos)
 	}
 	if int(nodeCount(cur.data[:])) >= MinLeafPairs {
@@ -565,11 +574,10 @@ func (t *Tree) delete(key int64) (bool, error) {
 
 	// cur underflowed — propagate merges/borrows upward. `cur` keeps
 	// pointing at the node currently being fixed (leaf first, then parents).
-	//
-	// Note: an errRestart can abandon an already-committed lower merge,
-	// leaving interior nodes residually under Min. That is a balance
-	// violation only — reads/scans/inserts stay correct, and a later delete
-	// on the same path rebalances lazily.
+
+	// A failed leaf TryLock restores the removed pair before releasing latches.
+	// Internal siblings can be locked while retaining their common parent:
+	// horizontal scans only latch leaves, so there is no internal left/right cycle.
 	for cur != nil {
 		leaf := isLeaf(cur.data[:])
 		minKeys := MinLeafPairs
@@ -675,14 +683,19 @@ func (t *Tree) delete(key int64) (bool, error) {
 		if err != nil {
 			return found, err
 		}
-		if !sib.latch.TryLock() {
+		if !leaf {
+			sib.latch.Lock()
+		} else if !sib.latch.TryLock() {
 			// Latching a left sibling while holding nodes to its right can
 			// deadlock against a scan's left→right coupling — restart.
 			// CRITICAL: sib is pinned but NOT latched here — unpin only,
 			// never Unlock (that would steal another holder's latch or panic).
 			t.pool.unpin(sib, false)
 			sib = nil
-			return found, errRestart
+			if found {
+				leafInsertAt(cur.data[:], pos, key, removedValue)
+			}
+			return false, errRestart
 		}
 		if int(nodeCount(sib.data[:])) > minKeys {
 			// Borrow one entry from the left sibling.
