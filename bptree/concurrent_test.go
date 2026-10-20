@@ -359,6 +359,8 @@ func TestConcurrentHeight3Churn(t *testing.T) {
 		}
 	}
 
+	checkTreeStructure(t, tr)
+
 	// Persistence: reopen and verify the live set survives.
 	if err := tr.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -372,6 +374,7 @@ func TestConcurrentHeight3Churn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen scan: %v", err)
 	}
+	checkTreeStructure(t, tr2)
 	if len(pairs2) != want {
 		t.Fatalf("reopen scan = %d pairs, want %d", len(pairs2), want)
 	}

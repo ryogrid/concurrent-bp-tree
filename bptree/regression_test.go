@@ -79,3 +79,84 @@ func TestHeightLimitAllowsSafeUpdates(t *testing.T) {
 		t.Fatalf("get: %d %v %v", v, ok, err)
 	}
 }
+
+// checkTreeStructure runs with no operations in flight. In addition to data
+// correctness, concurrent rebalancing must preserve occupancy and leaf depth.
+func checkTreeStructure(t *testing.T, tr *Tree) {
+	t.Helper()
+	seen := map[PageID]bool{}
+	var leaves, nexts []PageID
+	var walk func(PageID, int) (int64, int64)
+	walk = func(pid PageID, depth int) (int64, int64) {
+		if seen[pid] {
+			t.Fatalf("duplicate/cyclic page %d", pid)
+		}
+		seen[pid] = true
+		f, err := tr.pool.fetch(pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := f.data
+		tr.pool.unpin(f, false)
+		b := data[:]
+		n := int(nodeCount(b))
+		min, max := MinInternalKeys, MaxInternalKeys
+		if isLeaf(b) {
+			min, max = MinLeafPairs, MaxLeafPairs
+		}
+		if n > max || n < 0 || (depth > 1 && n < min) {
+			t.Fatalf("page %d depth %d count %d outside bounds", pid, depth, n)
+		}
+		if isLeaf(b) {
+			if int64(depth) != tr.meta.height {
+				t.Fatalf("leaf %d depth %d != height %d", pid, depth, tr.meta.height)
+			}
+			leaves = append(leaves, pid)
+			nexts = append(nexts, leafNext(b))
+			for i := 1; i < n; i++ {
+				if leafKey(b, i-1) >= leafKey(b, i) {
+					t.Fatalf("leaf %d unsorted", pid)
+				}
+			}
+			if n == 0 {
+				return 0, 0
+			}
+			return leafKey(b, 0), leafKey(b, n-1)
+		}
+		if n == 0 {
+			t.Fatalf("unshrunk internal root %d", pid)
+		}
+		lo, hi := walk(internalChild(b, 0), depth+1)
+		for i := 0; i < n; i++ {
+			childLo, childHi := walk(internalChild(b, i+1), depth+1)
+			sep := internalKey(b, i)
+			if hi >= sep || sep > childLo {
+				t.Fatalf("page %d separator %d not between %d and %d", pid, sep, hi, childLo)
+			}
+			hi = childHi
+		}
+		return lo, hi
+	}
+	walk(tr.meta.rootPageID, 1)
+	for i, pid := range leaves {
+		want := nilPageID
+		if i+1 < len(leaves) {
+			want = leaves[i+1]
+		}
+		if nexts[i] != want {
+			t.Fatalf("leaf %d next %d != %d", pid, nexts[i], want)
+		}
+	}
+	for pid := tr.meta.freeListHead; pid != nilPageID; {
+		if seen[pid] {
+			t.Fatalf("live or duplicate free page %d", pid)
+		}
+		seen[pid] = true
+		f, err := tr.pool.fetch(pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid = PageID(getI64(f.data[:], 0))
+		tr.pool.unpin(f, false)
+	}
+}
