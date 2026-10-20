@@ -1,0 +1,10 @@
+{
+  "name": "bptree-explanation",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.js",
+    "test:source": "node scripts/generate-source.js --check",
+    "test:browser": "node test/browser.cjs"
+  },
+  "devDependencies": { "playwright": "1.64.1" }
+}

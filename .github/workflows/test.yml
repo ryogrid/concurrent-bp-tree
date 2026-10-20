@@ -1,0 +1,28 @@
+name: Test tree and explanations
+on:
+  push:
+    branches: [master]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -race ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node explanation/scripts/generate-source.js --check
+      - run: node --test explanation/test/*.js
+      - run: npm ci --prefix explanation
+      - run: npx playwright install --with-deps chromium
+        working-directory: explanation
+      - run: npm run test:browser
+        working-directory: explanation

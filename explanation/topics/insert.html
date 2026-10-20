@@ -1,153 +1,23 @@
 <!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>要素挿入 — B+木 KVS 解説</title>
-<link rel="stylesheet" href="../shared/viz.css">
-</head>
-<body class="viz-topic">
-<div class="viz-main">
-<nav class="viz-nav">
-  <a href="get.html">← 要素探索</a>
-  <a href="../index.html">ポータル</a>
-  <a href="node-insert.html">次: ノード挿入 →</a>
-</nav>
-<h1>2. 要素挿入 (<code>Put</code> — 分裂しない場合)</h1>
-<p>
-挿入は <b>W (排他) ラッチでのクラビング下降</b> が本質。
-「子が安全 (=分裂しても自分に影響しない)」と判明した時点で
-祖先のラッチを一括解放するのが Get との違い。
-ここでは葉に空きがあるケースを見る —— 分裂するケースは
-<a href="split.html">スプリット</a> / <a href="node-insert.html">ノード挿入</a> ページ。
-</p>
-<ul>
-<li><b>安全なノード</b>: 挿入しても溢れない (<code>count &lt; MaxLeafPairs</code>)</li>
-<li><b>upsert</b>: キーが既にあれば値の上書き (<code>leafSetPair</code>)</li>
-</ul>
-
-<h2>デモ A: 新規挿入 — <code>put(45)</code></h2>
-<div id="dA"></div>
-
-<h2>デモ B: 上書き — <code>put(40, v2)</code></h2>
-<div id="dB"></div>
-
-<h2>対応表</h2>
-<table>
-<tr><th>画面上の表現</th><th>コード</th></tr>
-<tr><td>赤 <b>W</b> バッジ</td><td><code>cf.latch.Lock()</code> (tree.go:351)</td></tr>
-<tr><td>祖先バッジの一括消滅</td><td><code>releaseHeld(&held)</code> (tree.go:353) — 安全な子に到達</td></tr>
-<tr><td>セルが右シフトして挿入</td><td><code>leafInsertAt</code> (node.go:77)</td></tr>
-<tr><td>セル値だけ変わる</td><td><code>leafSetPair</code> (node.go:54) — upsert</td></tr>
-</table>
-
-<script src="../shared/bptree-sim.js"></script>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. キーと値を入れる — Goで学ぶB+木</title><link rel="stylesheet" href="../shared/viz.css"></head>
+<body class="viz-topic"><a class="skip-link" href="#main">本文へ</a><main class="viz-main" id="main"><nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="get.html">← 前の章</a><a href="node-insert.html">次の章 →</a></nav><header><p class="eyebrow">GO B+ TREE / LESSON 02</p><h1>2. キーと値を入れる</h1><p class="lead">まず葉を探す。空きがあれば、その葉だけを更新する</p></header><p><code>Put(key, value)</code> はキーがなければ挿入し、あれば値を上書きします。キーは葉の中で昇順に並びます。途中へ入れる場合は、後ろのペアを1つずつ右へずらして空きを作ります。</p>
+<p>書き込みでは排他ラッチ（W）を使います。降下先の子に空きがあれば、そこへ1件追加しても分裂しません。この状態を挿入に対して<strong>安全</strong>と呼びます。子の W を取ったあと、それより上のノードの W を解放できます。</p><aside class="reading-note"><strong>図の読み方</strong>　最大4件・最小2件に縮めたモデルです（Goは510件・255件）。「次へ」で1場面ずつ進めてください。図とコードは<strong>その場面の処理を終えた状態</strong>を示します。色付きの枠は注目箇所、R/Wバッジはこの操作が保持するページラッチです。</aside><section class="lesson-demo"><h2>1. 35を挿入する</h2><p>葉 [30,40] に35を入れます。葉の空きが確認できた時点で、親を解放する点に注目してください。</p><div id="d1"></div></section><section class="lesson-demo"><h2>2. 40の値を上書きする</h2><p>キーの個数は変わりません。キー40の値だけを4000から9999へ更新します。</p><div id="d2"></div></section><h2>「安全」は操作によって違う</h2><table><tr><th>操作</th><th>安全な子の条件</th><th>理由</th></tr><tr><td>挿入</td><td>個数 &lt; 最大数</td><td>1つ増えても収まる</td></tr><tr><td>削除</td><td>個数 &gt; 最小数</td><td>1つ減っても下限を守れる</td></tr></table><p>安全かどうかは、子をラッチしてから調べます。判定と変更の間に、別の書き込みが個数を変えることを防ぐためです。</p><nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="get.html">← 前の章</a><a href="node-insert.html">次の章 →</a></nav><script src="../shared/bptree-sim.js"></script>
 <script src="../shared/bptree-viz.js"></script>
+<script src="../shared/go-source.js"></script>
+<script src="../shared/lesson.js"></script>
 <script src="../shared/topics.js"></script>
-<script src="../shared/gh-links.js"></script>
 <script>
-const prep = s => { for (const k of [10,20,30,40,50,60,70]) s.put(k, k * 100); };
-
-const CODE = { file: "bptree/tree.go put() 降下部 + node.go (抜粋)", lines:
-  src("tree.go", 297,
-`func (t *Tree) put(key, value int64) (err error) {`).lines.concat(
-  [{ no: 0, text: "	… (deferred cleanup 設定)" }],
-  src("tree.go", 324,
-`	t.rootMu.Lock()
-	rootF, err := t.pool.fetch(t.meta.rootPageID)
-	if err != nil {
-		return err
-	}
-	cur = rootF
-	cur.latch.Lock()
-
-	// If the root cannot split, rootPageID cannot change — release rootMu
-	// early so other ops can start. If it can split and the tree is already
-	// at max height, bail before any mutation.
-	if safeForInsert(cur.data[:]) {
-		t.rootMu.Unlock()
-		rootHeld = false
-	} else if t.meta.height >= MaxTreeHeight {
-		return ErrMaxTreeHeight
-	}`).lines, [{ no: 0, text: "" }],
-  src("tree.go", 345,
-`	for !isLeaf(cur.data[:]) {
-		ci := internalFindChildIdx(cur.data[:], key)
-		cf, err := t.pool.fetch(internalChild(cur.data[:], ci))
-		if err != nil {
-			return err
-		}
-		cf.latch.Lock()
-		if safeForInsert(cf.data[:]) {
-			t.releaseHeld(&held)
-			t.release(cur, false)
-		} else {
-			if safeForInsert(cur.data[:]) {
-				// cur can't split further, so ancestors above it are
-				// unreachable by this propagation — drop them early.
-				t.releaseHeld(&held)
-			}
-			held.frames = append(held.frames, cur)
-			held.idxs = append(held.idxs, ci)
-		}
-		cur = cf
-	}
-
-	// cur is the W-latched leaf.
-	pos, found := leafFindPos(cur.data[:], key)
-	if found {
-		leafSetPair(cur.data[:], pos, key, value) // overwrite in place
-		t.release(cur, true)
-		cur = nil
-		t.releaseHeld(&held)
-		if rootHeld {
-			t.rootMu.Unlock()
-			rootHeld = false
-		}
-		return nil
-	}
-	if nodeCount(cur.data[:]) < MaxLeafPairs {
-		leafInsertAt(cur.data[:], pos, key, value)
-		t.release(cur, true)
-		cur = nil
-		t.releaseHeld(&held)
-		if rootHeld {
-			t.rootMu.Unlock()
-			rootHeld = false
-		}
-		return nil
-	}`).lines.concat([{ no: 0, text: "" }],
-  src("node.go", 77,
-`func leafInsertAt(b []byte, pos int, k, v int64) {
-	n := int(nodeCount(b))
-	for i := n; i > pos; i-- {
-		leafSetPair(b, i, leafKey(b, i-1), leafVal(b, i-1))
-	}
-	leafSetPair(b, pos, k, v)
-	setNodeCount(b, int64(n+1))
-}`).lines)) };
-
-const hl = {
-  "tag:init":           [297],
-  "tag:latch-root":     [324, 325, 329, 330],
-  "descend":            [346, 347],
-  "tag:descend-safe":   [351, 352, 353, 354],
-  "tag:descend-unsafe": [351, 356, 361, 362],
-  "leafOverwrite":      [370],
-  "leafInsert":         [381],
-  "tag:overwrite":      [368, 369, 370],
-  "tag:insert":         [368, 380, 381],
-  "tag:release":        [371, 373, 382, 384],
-};
-buildDemo(document.getElementById("dA"), {
-  prep, caption0: "準備完了 (基準木)。L2 [30,40] には空きがある → put(45)。",
-  ops: [s => s.put(45, 4500)], code: CODE, hl,
+buildDemo(document.getElementById("d1"), {
+  autoSource: true, operation: "put",
+  prep(s) { for (const k of [10, 20, 30, 40, 50, 60, 70]) s.put(k,k*100);  },
+  caption0: "初期状態。葉 [30,40] に35を入れます。葉の空きが確認できた時点で、親を解放する点に注目してください。",
+  ops: [s => s.put(35,3500)]
 });
-buildDemo(document.getElementById("dB"), {
-  prep, caption0: "基準木。キー 40 は存在する → 値だけ上書きされる。",
-  ops: [s => s.put(40, 9999)], code: CODE, hl,
+buildDemo(document.getElementById("d2"), {
+  autoSource: true, operation: "put",
+  prep(s) { for (const k of [10, 20, 30, 40, 50, 60, 70]) s.put(k,k*100);  },
+  caption0: "初期状態。キーの個数は変わりません。キー40の値だけを4000から9999へ更新します。",
+  ops: [s => s.put(40,9999)]
 });
-</script>
-</div>
-</body>
-</html>
+</script></main></body></html>

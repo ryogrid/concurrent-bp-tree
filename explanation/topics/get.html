@@ -1,146 +1,23 @@
 <!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>要素探索 — B+木 KVS 解説</title>
-<link rel="stylesheet" href="../shared/viz.css">
-</head>
-<body class="viz-topic">
-<div class="viz-main">
-<nav class="viz-nav">
-  <a href="../index.html">← ポータル</a>
-  <a href="../overview.html">全体概観</a>
-  <a href="insert.html">次: 要素挿入 →</a>
-</nav>
-<h1>1. 要素探索 (<code>Get</code>)</h1>
-<p>
-キーを <b>ルートから葉へ</b> たどるだけの最も単純な操作だが、
-並行実行の要である<b>ラッチカップリング (crabbing)</b> がここに表れる:
-子ノードの R ラッチを取得してから親の R ラッチを解放するため、
-木は常に「どこかが掴まれている」状態で降下し、他操作による
-構造変更と競合しない。読み同士は R (共有) ラッチなので、
-同じ経路を読む別の Get はブロックされない。
-</p>
-<p>
-準備木: <code>put(10,20,…,70)</code> で構築した高さ 2 の木
-(ルート <code>[30,50]</code>、葉 3 枚)。葉セルは
-<code>key:value</code> (value は key×100 にしてある)。
-右のコードパネルは実装の抜粋で、行番号は実ファイルのもの。
-</p>
-
-<h2>デモ A: ヒット — <code>get(40)</code></h2>
-<div id="dA"></div>
-
-<h2>デモ B: ミス — <code>get(45)</code></h2>
-<p>
-同じ葉にたどり着いても、<code>leafFindPos</code> が返す
-<code>pos</code> は「最初に key ≥ target になる位置」。
-45 は葉 <code>[30,40]</code> で pos=2 (=末尾) なので
-<code>found=false</code> を返す。経路はヒットと同じで、
-葉での分岐だけが違う点に注目。
-</p>
-<div id="dB"></div>
-
-<h2>対応表</h2>
-<table>
-<tr><th>画面上の表現</th><th>コード</th></tr>
-<tr><td>ノード右上の青 <b>R</b> バッジ</td><td><code>f.latch.RLock()</code> (tree.go:252,264)</td></tr>
-<tr><td>下降するステップ</td><td><code>internalFindChildIdx</code> (node.go:178) + <code>pool.fetch(internalChild(…,ci))</code> (tree.go:257-258)</td></tr>
-<tr><td>親の R バッジ消滅</td><td><code>f.latch.RUnlock(); unpin(f)</code> (tree.go:265-266) — ラッチカップリング</td></tr>
-<tr><td>葉での二分探索結果</td><td><code>leafFindPos</code> (node.go:61)</td></tr>
-<tr><td>全バッジ消滅で終了</td><td><code>RUnlock + unpin</code> (tree.go:275-276)</td></tr>
-</table>
-
-<script src="../shared/bptree-sim.js"></script>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. キーを探す — Goで学ぶB+木</title><link rel="stylesheet" href="../shared/viz.css"></head>
+<body class="viz-topic"><a class="skip-link" href="#main">本文へ</a><main class="viz-main" id="main"><nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="../overview.html">← 前の章</a><a href="insert.html">次の章 →</a></nav><header><p class="eyebrow">GO B+ TREE / LESSON 01</p><h1>1. キーを探す</h1><p class="lead">分岐の目印を読み、値のある葉へ進む</p></header><p>B+木では、<strong>値を保存するのは葉だけ</strong>です。内部ノードのキーは、進む子を選ぶための「分離キー」です。たとえば分離キーが <code>30, 50</code> なら、子は左から「30未満」「30以上50未満」「50以上」の3つに分かれます。境界と等しいキーは右へ進みます。</p>
+<p>並行実行では、選んだ子が移動・解放されないうちに、その子の共有ラッチ（R）を取ります。<strong>子を保護してから親を解放する</strong>手順をラッチカップリングと呼びます。次の図では、親子の両方に R が付く瞬間と、親の R が消える瞬間を分けています。</p><aside class="reading-note"><strong>図の読み方</strong>　最大4件・最小2件に縮めたモデルです（Goは510件・255件）。「次へ」で1場面ずつ進めてください。図とコードは<strong>その場面の処理を終えた状態</strong>を示します。色付きの枠は注目箇所、R/Wバッジはこの操作が保持するページラッチです。</aside><section class="lesson-demo"><h2>1. 40を探す</h2><p>親で範囲を選び、葉で二分探索します。値4000が見つかります。</p><div id="d1"></div></section><section class="lesson-demo"><h2>2. 35を探す</h2><p>同じ葉へ進みますが、35は存在しません。「挿入するとしたらどの位置か」と「見つかったか」は別の結果です。</p><div id="d2"></div></section><h2>コードで確かめる</h2><p><code>internalFindChildIdx</code> は <code>target &lt; key[mid]</code> で分岐します。葉の <code>leafFindPos</code> は「target以上の最初の位置」を求め、最後に等しいかを確認します。Getの返り値は <code>(value, ok, error)</code>。値が0でも、<code>ok=true</code> なら存在するキーです。</p><nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="../overview.html">← 前の章</a><a href="insert.html">次の章 →</a></nav><script src="../shared/bptree-sim.js"></script>
 <script src="../shared/bptree-viz.js"></script>
+<script src="../shared/go-source.js"></script>
+<script src="../shared/lesson.js"></script>
 <script src="../shared/topics.js"></script>
-<script src="../shared/gh-links.js"></script>
 <script>
-const prep = s => { for (const k of [10,20,30,40,50,60,70]) s.put(k, k * 100); };
-
-const CODE = { file: "bptree/tree.go + node.go (抜粋)", lines:
-  src("tree.go", 245,
-`func (t *Tree) get(key int64) (int64, bool, error) {
-	t.rootMu.RLock()
-	f, err := t.pool.fetch(t.meta.rootPageID)
-	if err != nil {
-		t.rootMu.RUnlock()
-		return 0, false, err
-	}
-	f.latch.RLock()
-	t.rootMu.RUnlock()
-
-	// Crab down: R-latch child before releasing the parent.
-	for !isLeaf(f.data[:]) {
-		ci := internalFindChildIdx(f.data[:], key)
-		cf, err := t.pool.fetch(internalChild(f.data[:], ci))
-		if err != nil {
-			f.latch.RUnlock()
-			t.pool.unpin(f, false)
-			return 0, false, err
-		}
-		cf.latch.RLock()
-		f.latch.RUnlock()
-		t.pool.unpin(f, false)
-		f = cf
-	}
-
-	pos, found := leafFindPos(f.data[:], key)
-	var v int64
-	if found {
-		v = leafVal(f.data[:], pos)
-	}
-	f.latch.RUnlock()
-	t.pool.unpin(f, false)
-	return v, found, nil
-}`).lines.concat([{ no: 0, text: "" }],
-  src("node.go", 178,
-`func internalFindChildIdx(b []byte, target int64) int {
-	n := int(nodeCount(b))
-	lo, hi := 0, n
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if target < internalKey(b, mid) {
-			hi = mid
-		} else {
-			lo = mid + 1
-		}
-	}
-	return lo
-}`).lines, [{ no: 0, text: "" }],
-  src("node.go", 61,
-`func leafFindPos(b []byte, target int64) (int, bool) {
-	n := int(nodeCount(b))
-	lo, hi := 0, n
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if leafKey(b, mid) < target {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	return lo, lo < n && leafKey(b, lo) == target
-}`).lines) };
-
-const hl = {
-  "tag:init":       [245],
-  "descend":        [256, 257, 258, 264],
-  "unlatch":        [265, 266],
-  "tag:latch-root": [246, 247, 252],
-  "tag:leaf-find":  [270, 272, 273],
-  "tag:release":    [275, 276],
-};
-buildDemo(document.getElementById("dA"), {
-  prep, caption0: "準備完了: ルート [30,50]、葉 3 枚。ここから get(40) を実行。",
-  ops: [s => s.get(40)], code: CODE, hl,
+buildDemo(document.getElementById("d1"), {
+  autoSource: true, operation: "get",
+  prep(s) { for (const k of [10, 20, 30, 40, 50, 60, 70]) s.put(k,k*100);  },
+  caption0: "初期状態。親で範囲を選び、葉で二分探索します。値4000が見つかります。",
+  ops: [s => s.get(40)]
 });
-buildDemo(document.getElementById("dB"), {
-  prep, caption0: "同じ木で get(45) — 経路は同じ、葉での結果だけが違う。",
-  ops: [s => s.get(45)], code: CODE, hl,
+buildDemo(document.getElementById("d2"), {
+  autoSource: true, operation: "get",
+  prep(s) { for (const k of [10, 20, 30, 40, 50, 60, 70]) s.put(k,k*100);  },
+  caption0: "初期状態。同じ葉へ進みますが、35は存在しません。「挿入するとしたらどの位置か」と「見つかったか」は別の結果です。",
+  ops: [s => s.get(35)]
 });
-</script>
-</div>
-</body>
-</html>
+</script></main></body></html>

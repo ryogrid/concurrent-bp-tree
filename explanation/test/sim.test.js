@@ -15,8 +15,7 @@ function checkInvariants(sim) {
     if (!isRoot) {
       const min = n.leaf ? sim.minLeaf : sim.minInternal;
       assert.ok(n.count >= 0, `negative count ${n.pid}`);
-      // 残留アンダーフローは合法 (lazy rebalance) なので下限は 1
-      assert.ok(n.count >= 1, `non-root node ${n.pid} below residual floor`);
+      assert.ok(n.count >= min, `non-root node ${n.pid} below minimum ${min}`);
     }
     const max = n.leaf ? sim.maxLeaf : sim.maxInternal;
     assert.ok(n.count <= max, `node ${n.pid} over capacity`);
@@ -307,6 +306,46 @@ test("del: unsafe 祖先はラッチを保持したまま降下 (3枚保持は�
         assert.ok(!(id in st.marks), `${st.tag}: freed ${id} がまだラッチ中`);
       }
     }
+  }
+  checkInvariants(sim);
+});
+
+test("TryLock failure restores both the key and its original value before restart", () => {
+  const sim = new BptreeSim();
+  for (const k of [10,20,30,40,50,60,70,45]) sim.put(k,k*17);
+  sim.del(70);
+  const before = sim.snapshot();
+  const {steps,removed} = sim.del(60,{trylockFail:true});
+  const failed = steps.find(s=>s.tag === 'trylock-fail');
+  assert.ok(failed, 'must exercise failure');
+  assert.deepStrictEqual(failed.state,before);
+  assert.deepStrictEqual(failed.marks,{});
+  assert.strictEqual(failed.rootLock,null);
+  assert.ok(removed);
+  checkInvariants(sim);
+});
+
+test("latch events reproduce every displayed badge including split/merge/retry", () => {
+  const sim = new BptreeSim();
+  const results=[];
+  for(let k=10;k<=200;k+=10) results.push(sim.put(k,k));
+  for(let k=200;k>=10;k-=10) results.push(sim.del(k,{trylockFail:true}));
+  for(const {steps} of results) {
+    const held = {};
+    for(const step of steps) {
+      for(const ev of step.events) {
+        if(ev.t === 'latch') held[ev.node]=ev.mode;
+        if(ev.t === 'unlatch') delete held[ev.node];
+        if(ev.t === 'unlatchAll') for(const id of Object.keys(held)) delete held[id];
+      }
+      assert.deepStrictEqual(step.marks,held,step.tag);
+      for(const id of Object.keys(held)) {
+        assert.ok(step.state.nodes[id],`${step.tag}: latch on missing page`);
+        assert.notStrictEqual(step.statuses[id],'freed');
+      }
+    }
+    assert.deepStrictEqual(held,{});
+    assert.strictEqual(steps.at(-1).rootLock,null);
   }
   checkInvariants(sim);
 });

@@ -16,7 +16,8 @@ import (
 //   - metaMu: guards meta.freeListHead / meta.nextPageID. Leaf lock: its
 //     critical sections never take page latches or rootMu.
 //   - page latches: per-frame RWMutex, acquired top-down and left-to-right
-//     (latch crabbing). Left-sibling acquisition uses TryLock + full retry.
+//     (latch crabbing). Left leaf siblings use TryLock + rollback/retry;
+//     internal siblings are locked under their common parent.
 //   - pool.mu: innermost leaf lock, never held while acquiring anything else.
 type Tree struct {
 	disk *diskManager
@@ -148,12 +149,12 @@ func (t *Tree) Close() error {
 // can form.
 const maxConcurrentOps = 20
 
-// errRestart is an internal sentinel: a left-sibling TryLock failed, so the
+// errRestart is an internal sentinel: a left-leaf TryLock failed, so the
 // operation released everything and retries from the root.
 var errRestart = errors.New("bptree: restart operation")
 
 // retryOp retries an op body on temporary failures: buffer pool starvation
-// (ErrNoFreeFrame) or a left-sibling TryLock loss (errRestart). Waiters and
+// (ErrNoFreeFrame) or a left-leaf TryLock loss (errRestart). Waiters and
 // retrying ops never hold pins while blocked, so progress is guaranteed.
 const maxOpRetries = 1000
 
@@ -619,8 +620,8 @@ func (t *Tree) delete(key int64) (bool, error) {
 		pn := int(nodeCount(parent.data[:]))
 
 		if pn == 0 {
-			// Degenerate single-child parent (possible via residually
-			// underfull interior nodes): no sibling exists to borrow from
+			// Defensive handling for a single-child parent in files written
+			// by the older lazy-rebalancing implementation: no sibling exists to borrow from
 			// or merge into — release cur and keep climbing with the
 			// parent as the node to fix.
 			t.release(cur, true)

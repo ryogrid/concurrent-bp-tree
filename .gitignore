@@ -2,3 +2,4 @@
 *.db-journal
 .serena/
 .devin/config.local.json
+node_modules/

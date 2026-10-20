@@ -1,162 +1,24 @@
 <!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ノード挿入 — B+木 KVS 解説</title>
-<link rel="stylesheet" href="../shared/viz.css">
-</head>
-<body class="viz-topic">
-<div class="viz-main">
-<nav class="viz-nav">
-  <a href="insert.html">← 要素挿入</a>
-  <a href="../index.html">ポータル</a>
-  <a href="split.html">次: スプリット →</a>
-</nav>
-<h1>3. 要素挿入にともなうノード挿入</h1>
-<p>
-葉が満杯のときの挿入は <b>新しいページ (=ノード) の誕生</b> を伴う。
-このページの焦点は、木にノードが「挿入」される機構:
-</p>
-<ol>
-<li><code>allocPage</code> — フリーリストが空なら <code>nextPageID++</code>
-    (ファイル末尾の暗黙伸長)、空なら再利用</li>
-<li><code>leafInsertSplit</code> で新旧に分配 + <b>nextLeafPID の配線</b>
-    (<code>right.next = cur.next; cur.next = rightPID</code>)</li>
-<li><code>internalInsertKeyAt(parent, ci, sep, rightPID)</code> —
-    親のキー/子配列をシフトして <b>分離キー+子ポインタ</b> を挿入</li>
-</ol>
-<p>
-準備: 基準木 + <code>put(75)</code> で右端の葉を満杯 <code>[50,60,70,75]</code>
-(4/4) にしておく。<b>満杯でなければ分裂もノード挿入も起きない</b>点が重要。
-</p>
-
-<h2>デモ: <code>put(80)</code> — 分裂 → 親へのノード挿入</h2>
-<div id="dA"></div>
-
-<h2>対応表</h2>
-<table>
-<tr><th>画面上の表現</th><th>コード</th></tr>
-<tr><td>新ノードの出現</td><td><code>allocPageRetry → fetchRetry → latch</code> (tree.go:393-401), 初期化は <code>leafInit</code> (node.go:124 経由)</td></tr>
-<tr><td>要素の左右への振り分け</td><td><code>leafInsertSplit</code> (node.go:104)</td></tr>
-<tr><td>葉の →p リンクのつなぎ替え</td><td><code>leafSetNext</code> 2行 (tree.go:403-404)</td></tr>
-<tr><td>親への新しいキー+子スロット</td><td><code>internalInsertKeyAt</code> (node.go:204, 呼出 tree.go:415)</td></tr>
-<tr><td>meta 行の nextPID/freelist 変化</td><td><code>allocPageLocked</code> (freelist.go:13)</td></tr>
-</table>
-
-<script src="../shared/bptree-sim.js"></script>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3. 葉を増やして接続する — Goで学ぶB+木</title><link rel="stylesheet" href="../shared/viz.css"></head>
+<body class="viz-topic"><a class="skip-link" href="#main">本文へ</a><main class="viz-main" id="main"><nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="insert.html">← 前の章</a><a href="split.html">次の章 →</a></nav><header><p class="eyebrow">GO B+ TREE / LESSON 03</p><h1>3. 葉を増やして接続する</h1><p class="lead">葉を分けるだけでは終わらない。横と上の参照をつなぐ</p></header><p>満杯の葉に新しいキーを入れるときは、右側の葉を1枚割り当てます。図では最大4件なので、5件を左2件・右3件に分けます。Go実装では最大510件で、511件を255件・256件に分けます。</p>
+<ol><li><strong>ペアを分ける。</strong> 左の葉には小さいキー、右の葉には大きいキーを置きます。</li><li><strong>葉のリンクをつなぐ。</strong> 新しい右葉の next に旧 next を入れ、左葉の next を右葉へ向けます。</li><li><strong>親の分岐を増やす。</strong> 右葉の最小キーと、右葉のページIDを親へ追加します。</li></ol>
+<p>手順の途中では、新しい葉がまだ親に接続されていません。図ではその葉を下段の破線枠に表示します。これは説明用の一時的な配置です。</p><aside class="reading-note"><strong>図の読み方</strong>　最大4件・最小2件に縮めたモデルです（Goは510件・255件）。「次へ」で1場面ずつ進めてください。図とコードは<strong>その場面の処理を終えた状態</strong>を示します。色付きの枠は注目箇所、R/Wバッジはこの操作が保持するページラッチです。</aside><section class="lesson-demo"><h2>1. 右端の葉を分裂させる</h2><p>初期状態の右端は [50,60,70,80]。90を入れて、分割・葉リンク・親への追加の順を見ます。</p><div id="d1"></div></section><section class="lesson-demo"><h2>2. 解放したページを再利用する</h2><p>準備時に20を削除して葉を1枚解放しています。90の挿入で分裂すると、freelistのページIDが再利用されます。</p><div id="d2"></div></section><h2>ページIDとメモリ上の位置</h2><p>親や葉リンクに保存するのはページIDです。ファイル上の位置は <code>pageID × 8192</code> バイトで求めます。バッファプールは、そのページを載せているフレームを返します。新規割当の <code>allocPage</code> と、フレームを得る <code>fetch</code> は別の処理です。</p><nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="insert.html">← 前の章</a><a href="split.html">次の章 →</a></nav><script src="../shared/bptree-sim.js"></script>
 <script src="../shared/bptree-viz.js"></script>
+<script src="../shared/go-source.js"></script>
+<script src="../shared/lesson.js"></script>
 <script src="../shared/topics.js"></script>
-<script src="../shared/gh-links.js"></script>
 <script>
-const prep = s => {
-  for (const k of [10,20,30,40,50,60,70,75]) s.put(k, k * 100);
-};
-
-const CODE = { file: "bptree/tree.go + node.go + freelist.go (抜粋)", lines:
-  src("tree.go", 297,
-`func (t *Tree) put(key, value int64) (err error) {`).lines.concat(
-  [{ no: 0, text: "	…" }],
-  src("tree.go", 324,
-`	t.rootMu.Lock()
-	rootF, err := t.pool.fetch(t.meta.rootPageID)
-	if err != nil {
-		return err
-	}
-	cur = rootF
-	cur.latch.Lock()`).lines, [{ no: 0, text: "	… (下降ループ: 子が安全なら祖先解放、危険なら held に保持)" }],
-  src("tree.go", 345,
-`	for !isLeaf(cur.data[:]) {
-		ci := internalFindChildIdx(cur.data[:], key)
-		cf, err := t.pool.fetch(internalChild(cur.data[:], ci))
-		if err != nil {
-			return err
-		}
-		cf.latch.Lock()
-		if safeForInsert(cf.data[:]) {
-			t.releaseHeld(&held)
-			t.release(cur, false)
-		} else {
-			if safeForInsert(cur.data[:]) {
-				// cur can't split further, so ancestors above it are
-				// unreachable by this propagation — drop them early.
-				t.releaseHeld(&held)
-			}
-			held.frames = append(held.frames, cur)
-			held.idxs = append(held.idxs, ci)
-		}
-		cur = cf
-	}`).lines, [{ no: 0, text: "" }],
-  src("tree.go", 392,
-`	// Leaf split: build 511 pairs in scratch, 255 stay / 256 go right.
-	rightPID, err := t.allocPageRetry()
-	if err != nil {
-		return err
-	}
-	rightF, err = t.fetchRetry(rightPID)
-	if err != nil {
-		return err
-	}
-	rightF.latch.Lock()
-	sep := leafInsertSplit(cur.data[:], rightF.data[:], key, value)
-	leafSetNext(rightF.data[:], leafNext(cur.data[:]))
-	leafSetNext(cur.data[:], rightPID)`).lines, [{ no: 0, text: "" }],
-  src("tree.go", 414,
-`		if nodeCount(parent.data[:]) < MaxInternalKeys {
-			internalInsertKeyAt(parent.data[:], ci, sep, rightPID)
-			t.release(parent, true)`).lines, [{ no: 0, text: "	…" }],
-  src("tree.go", 458,
-`	t.release(cur, true)
-	cur = nil
-	t.release(rightF, true)
-	rightF = nil
-	t.releaseHeld(&held)`).lines, [{ no: 0, text: "" }],
-  src("node.go", 204,
-`func internalInsertKeyAt(b []byte, pos int, k int64, newRight PageID) {
-	n := int(nodeCount(b))
-	for i := n; i > pos; i-- {
-		internalSetKey(b, i, internalKey(b, i-1))
-		internalSetChild(b, i+1, internalChild(b, i))
-	}
-	internalSetKey(b, pos, k)
-	internalSetChild(b, pos+1, newRight)
-	setNodeCount(b, int64(n+1))
-}`).lines, [{ no: 0, text: "" }],
-  src("freelist.go", 13,
-`func (t *Tree) allocPageLocked() (PageID, error) {
-	if head := t.meta.freeListHead; head != nilPageID {
-		f, err := t.pool.fetch(head)
-		if err != nil {
-			return nilPageID, err
-		}
-		next := PageID(getI64(f.data[:], 0))
-		t.pool.unpin(f, false)
-		t.meta.freeListHead = next
-		return head, nil
-	}
-	pid := t.meta.nextPageID
-	t.meta.nextPageID++
-	return pid, nil
-}`).lines) };
-
-const hl = {
-  "tag:init":           [297],
-  "tag:latch-root":     [324, 325, 329, 330],
-  "tag:descend-safe":   [351, 352, 353, 354],
-  "tag:descend-unsafe": [351, 356, 361, 362],
-  "tag:leaf-split":     [393, 401, 402],
-  "tag:leaf-link":      [403, 404],
-  "internalInsert":     [415],
-  "copyUp":             [415],
-  "tag:propagate":      [414, 415],
-  "tag:release":        [458, 460, 462],
-};
-buildDemo(document.getElementById("dA"), {
-  prep,
-  caption0: "準備完了: 右端の葉は [50,60,70,75] で満杯 (MAX=4)。次の挿入で分裂が起きる。",
-  ops: [s => s.put(80, 8000)], code: CODE, hl,
+buildDemo(document.getElementById("d1"), {
+  autoSource: true, operation: "put",
+  prep(s) { for (const k of [10, 20, 30, 40, 50, 60, 70, 80]) s.put(k,k*100);  },
+  caption0: "初期状態。初期状態の右端は [50,60,70,80]。90を入れて、分割・葉リンク・親への追加の順を見ます。",
+  ops: [s => s.put(90,9000)]
 });
-</script>
-</div>
-</body>
-</html>
+buildDemo(document.getElementById("d2"), {
+  autoSource: true, operation: "put",
+  prep(s) { for (const k of [10, 20, 30, 40, 50, 60, 70]) s.put(k,k*100); s.del(20); s.put(80,8000); },
+  caption0: "初期状態。準備時に20を削除して葉を1枚解放しています。90の挿入で分裂すると、freelistのページIDが再利用されます。",
+  ops: [s => s.put(90,9000)]
+});
+</script></main></body></html>

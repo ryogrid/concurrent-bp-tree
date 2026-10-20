@@ -99,7 +99,7 @@ class BptreeSim {
   }
   step(tag, caption, statuses) {
     this.steps.push({
-      tag, caption,
+      tag, caption, operation: this.operation, rootLock: this.rootLock || null,
       events: this.pendingEvents.splice(0),
       marks: Object.fromEntries(this.latches),
       statuses: statuses || {},
@@ -209,6 +209,7 @@ class BptreeSim {
 
   // ---------- Get (tree.go get) ----------
   get(key) {
+    this.operation = "get"; this.rootLock = null;
     this.steps = []; this.latches.clear(); this.statuses = {};
     let cur = this.root;
     this.latch(cur, "R");
@@ -237,17 +238,18 @@ class BptreeSim {
         : `leafFindPos(${key}) → pos=${pos} (found=false): キー不在を返す。`,
       { [cur.id()]: found ? "target" : "visited" });
     this.unlatch(cur);
-    this.step("release", "全ラッチ解放 → Unpin。読みは他の読みと完全に並行可能。");
+    this.rootLock = null;
+    this.step("release", "全ラッチ解放 → Unpin。R ラッチ同士は共有できる。書き込みの W ラッチとは同時に保持できない。");
     return { steps: this.steps, found };
   }
 
   // ---------- Put (tree.go put) ----------
   put(key, value) {
+    this.operation = "put"; this.rootLock = this.safeForInsert(this.root) ? null : "W";
     this.steps = []; this.latches.clear(); this.statuses = {};
     let cur = this.root;
     this.latch(cur, "W");
-    // (実装はここで meta.height >= MaxTreeHeight なら ErrMaxTreeHeight を返す。
-    //  デモ規模では到達しないため省略)
+    // 高さ制限は実際にルート分裂が必要と分かった時点で判定する (デモでは省略)。
     this.step("latch-root",
       `rootMu.Lock でルート差し替えを直列化 → ルート p${cur.pid} を W ラッチ。` +
       (this.safeForInsert(cur)
@@ -352,12 +354,14 @@ class BptreeSim {
     }
     this.unlatch(cur); this.unlatch(rightNode);
     for (const h of held) this.unlatch(h.n);
+    this.rootLock = null;
     this.step("release", "全ラッチ解放 + writeMeta。put 完了。");
     return { steps: this.steps };
   }
   finishOp(held, cur) {
     this.unlatch(cur);
     for (const h of held) this.unlatch(h.n);
+    this.rootLock = null;
     this.step("release", "全ラッチ解放 + writeMeta。put 完了。");
   }
 
@@ -365,6 +369,7 @@ class BptreeSim {
   // inject: {trylockFail: true} で最初の左兄弟 TryLock を 1 回だけ失敗させる
   // (並行説明用フック。実装ではタイミング依存)。
   del(key, inject) {
+    this.operation = "delete";
     this.steps = []; this.latches.clear(); this.statuses = {};
     let removed = false;
     let attempts = 0;
@@ -377,12 +382,14 @@ class BptreeSim {
       injectLeft = false; // 注入は 1 回だけ
       this.step("restart",
         `TryLock 失敗 → 保持中の全ラッチ・全 pin を解放して操作を最初からやり直す (errRestart → retryOp)。` +
-        (r.removed ? " キーは試行1で削除済み —— 再降下では found=false だが、残ったアンダーフローのリバランスは続行する。" : ""));
+        " キーと値は元に戻っている。");
     }
+    this.rootLock = null;
     this.step("release", "全ラッチ解放 + writeMeta。delete 完了。");
     return { steps: this.steps, removed, attempts };
   }
   deleteAttempt(key, failTrylock) {
+    this.rootLock = this.safeForDelete(this.root) ? null : "W";
     let cur = this.root;
     this.latch(cur, "W");
     this.step("latch-root",
@@ -419,6 +426,7 @@ class BptreeSim {
       cur = cf;
     }
     const [pos, found] = this.leafFindPos(cur, key);
+    const removedValue = cur.vals[pos];
     if (found) {
       this.leafRemoveAt(cur, pos);
       this.step("leaf-remove", `leafRemoveAt(pos=${pos}) で削除 → [${cur.keys.join(",")}]。`, { [cur.id()]: "target" });
@@ -442,7 +450,7 @@ class BptreeSim {
           const old = cur;
           this.root = newRoot; this.height--;
           this.emit({ t: "rootShrink", old: old.id(), newRoot: newRoot.id() });
-          // Go: meta 更新 → release(旧root) → freePage (tree.go:586-590)
+          // Go: meta 更新 → release(旧root) → freePage
           this.unlatch(old);
           this.step("root-shrink",
             `ルートが 0 キー 1 子の内部ノード → meta.root = 子 p${newRoot.pid}, height=${this.height}。旧ルートは解放→フリーリストへ。`,
@@ -491,7 +499,7 @@ class BptreeSim {
           this.internalMergeInto(cur, sib, parent.keys[ci]);
         }
         this.internalRemoveKeyAt(parent, ci);
-        // Go: マージ完了直後に sib/cur を解放 → freePage へ (tree.go:659-665)
+        // Go: マージ完了直後に sib/cur を解放 → freePage へ
         this.unlatch(sib); this.unlatch(cur);
         this.step("merge-right",
           `右兄弟も Min → マージ: p${sib.pid} を p${cur.pid} に吸収${leaf ? "、nextLeafPID 引継ぎ" : " (分離キーを引き下ろす)"}。` +
@@ -501,15 +509,17 @@ class BptreeSim {
         cur = parent;
         continue;
       }
-      // ci == pn: 右端 → 左兄弟 (ロック順序違反 → TryLock + 再試行)
+      // ci == pn: 右端 → 左兄弟。葉だけTryLock、内部は共通の親の下でLock。
       const sib = parent.children[ci - 1];
-      this.emit({ t: "trylock", node: sib.id(), ok: !failTrylock });
-      if (failTrylock) {
+      if (leaf) this.emit({ t: "trylock", node: sib.id(), ok: !failTrylock });
+      if (leaf && failTrylock) {
         // 失敗: 保持中の全ラッチを解放して操作ごと再試行 (errRestart)
+        if (found) this.leafInsertAt(cur, pos, key, removedValue);
         this.unlatchAll();
+        this.rootLock = null;
         this.step("trylock-fail",
-          `左兄弟 p${sib.pid} の TryLock が失敗 (スキャン等が保持中) → errRestart。デッドロックを避けるため全解放して再試行。`);
-        return { removed: found, restart: true };
+          `左兄弟 p${sib.pid} の TryLock が失敗 (スキャン等が保持中) → 削除したキーと値を戻し、全ラッチを解放。変更前の木から再試行する。`);
+        return { removed: false, restart: true };
       }
       this.latch(sib, "W");
       if (sib.count > min) {
@@ -520,7 +530,7 @@ class BptreeSim {
           parent.keys[ci - 1] = this.internalBorrowFromLeft(cur, sib, parent.keys[ci - 1]);
         }
         this.step("borrow-left",
-          `TryLock 成功 → 左兄弟 p${sib.pid} から借用 (最大要素を先頭へ)。親 sep[${ci - 1}] を更新 → [${parent.keys.join(",")}]。`,
+          `${leaf ? "TryLock" : "Lock"} 成功 → 左兄弟 p${sib.pid} から借用 (最大要素を先頭へ)。親 sep[${ci - 1}] を更新 → [${parent.keys.join(",")}]。`,
           { [cur.id()]: "target", [sib.id()]: "target" });
         this.unlatch(sib); this.unlatch(cur); this.unlatch(parent);
         cur = null;
@@ -534,7 +544,7 @@ class BptreeSim {
         this.internalMergeInto(sib, cur, parent.keys[ci - 1]);
       }
       this.internalRemoveKeyAt(parent, ci - 1);
-      // Go: マージ完了直後に sib/cur を解放 → freePage へ (tree.go:714-720)
+      // Go: マージ完了直後に sib/cur を解放 → freePage へ
       this.unlatch(sib); this.unlatch(cur);
       this.step("merge-left",
         `左兄弟に自分を吸収: p${cur.pid} → p${sib.pid}${leaf ? "、nextLeafPID 引継ぎ" : " (分離キー引き下ろし)"}。` +

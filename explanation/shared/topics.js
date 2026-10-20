@@ -22,16 +22,18 @@
 
   function buildDemo(el, cfg) {
     el.classList.add("stage");
+    const legend = mk("p", "demo-legend", "緑枠＝葉 ／ 橙枠＝内部ノード ／ 実線＝子への参照 ／ 緑の矢印＝次の葉。R＝共有ラッチ、W＝排他ラッチ。バッジなし＝この操作はラッチを保持していません。p番号＝ページID、破線枠＝親へ未接続のノード／解放対象。横長の図は横にスクロールできます。", el);
     const wrap = mk("div", "canvas-wrap", undefined, el);
     mk("div", "bp-canvas", undefined, wrap);
     const side = mk("div", "side", undefined, el);
     const controls = mk("div", "controls", undefined, side);
-    mk("button", "b-prev", "◀", controls);
-    mk("button", "b-next", "▶", controls);
-    mk("button", "b-auto", "▶ 自動", controls);
-    mk("button", "b-reset", "⟲", controls);
+    mk("button", "b-prev", "◀ 戻る", controls);
+    mk("button", "b-next", "次へ ▶", controls);
+    mk("button", "b-auto", "▶ 自動再生", controls);
+    mk("button", "b-reset", "最初から", controls);
     mk("span", "stepno", "", controls);
-    mk("div", "caption", "", side);
+    const caption = mk("div", "caption", "", side);
+    caption.setAttribute("aria-live", "polite");
     mk("div", "codepanel", "", side);
     const sim = new BptreeSim();
     if (cfg.prep) cfg.prep(sim);
@@ -42,6 +44,7 @@
     for (const op of cfg.ops) steps.push(...op(sim).steps);
     // イベント種別 → コード行ハイライト
     for (const s of steps) {
+      if (cfg.autoSource) { s.source = sourceFor(s, cfg.operation); continue; }
       const lines = new Set(cfg.hlAlways || []);
       for (const e of s.events)
         (cfg.hl[e.t] || []).forEach(n => lines.add(n));

@@ -77,7 +77,7 @@
 .codepanel .ln.hl { background: rgba(255,224,138,.16); }
 .codepanel .ln.hl .no { color: var(--hl); }
 
-/* GitHub ソースリンク (gh-links.js が <code> を包む / パネルの行番号) */
+/* コードパネルのGitHubソースリンク */
 a.gh { color: inherit; text-decoration: none;
   border-bottom: 1px dotted var(--accent); }
 a.gh:hover { border-bottom-style: solid; }
@@ -98,3 +98,83 @@ a.gh:hover { border-bottom-style: solid; }
   .stage { flex-direction: column; }
   .codepanel { flex: none; }
 }
+
+/* Reading layout: generous prose, then a stable tree beside the current code. */
+.viz-topic { line-height: 1.8; }
+.viz-main { max-width: 1400px; padding: 32px 32px 80px; }
+.viz-main header { max-width: 960px; margin: 36px 0; }
+.viz-main h1 { font-size: clamp(26px, 3.4vw, 42px); line-height: 1.45; color: var(--fg); letter-spacing: .02em; }
+.viz-main h2 { font-size: 21px; color: var(--fg); margin: 36px 0 12px; }
+.viz-main p, .viz-main li { font-size: 16px; line-height: 1.95; }
+.viz-main > p, .viz-main > ol { max-width: 1000px; }
+.viz-main .lead { color: #b7cadd; font-size: 19px; }
+.viz-main .eyebrow { font-size: 12px; letter-spacing: .16em; color: var(--accent); }
+.viz-nav { padding: 12px 0; border-bottom: 1px solid var(--line); gap: 24px; }
+.viz-main code { font-size: .88em; overflow-wrap: anywhere; }
+.viz-main table { width: 100%; font-size: 14px; margin: 20px 0; }
+.viz-main th, .viz-main td { padding: 12px; text-align: left; vertical-align: top; }
+.reading-note { border-left: 3px solid var(--accent); background: var(--panel); padding: 16px 20px; margin: 28px 0; font-size: 14px; }
+.lesson-demo { padding: 0 0 32px; margin-bottom: 28px; border-bottom: 1px solid var(--line); }
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 42%); gap: 12px 18px; }
+.stage .demo-legend { grid-column: 1 / -1; font-size: 12px; color: #afc0d2; margin: 0; }
+.canvas-wrap { min-height: 300px; align-self: start; overflow: auto; padding-bottom: 12px; }
+.bp-canvas svg.edges { display: block; overflow: visible; width: 100%; height: 100%; }
+.stage .side { display: flex; min-width: 0; }
+.controls { margin-top: 0; }
+.controls button { min-height: 40px; padding: 7px 12px; }
+.controls button:disabled { opacity: .4; cursor: default; }
+button:focus-visible, a:focus-visible { outline: 3px solid var(--hl); outline-offset: 3px; }
+.caption { padding: 14px; border-radius: 8px; background: #202e3e; line-height: 1.8; min-height: 72px; }
+.codepanel { flex: none; max-height: 400px; min-height: 140px; }
+.codepanel pre { font-size: 12px; line-height: 1.65; padding: 8px 0; }
+.source-label { color: var(--accent); padding: 8px 12px 0; font: 12px monospace; }
+.codepanel .file { z-index: 1; }
+.bp-cell { flex: 0 0 32px; width: 32px; min-width: 0; font-size: 11px; }
+.bp-cell.kv { flex-basis: 64px; width: 64px; min-width: 0; }
+.bp-cell.child-slot { flex-basis: 34px; width: 34px; min-width: 0; }
+.bp-cell.next-slot { flex-basis: 42px; width: 42px; min-width: 0; }
+.bp-node .pid, .bp-node .latch-badge { top: -21px; font-size: 11px; line-height: 18px; }
+.bp-meta { font: 11px/1.5 monospace; white-space: nowrap; }
+.portal-card { padding: 24px; }
+.portal-card .t { font-size: 18px; }
+.portal-card .d { font-size: 14px; line-height: 1.8; }
+.start-link { display: inline-block; margin: 16px 0; padding: 16px 24px; border: 1px solid var(--accent); border-radius: 8px; text-decoration: none; }
+footer { margin-top: 50px; font-size: 13px; color: var(--muted); }
+.skip-link { position: absolute; top: -100px; left: 12px; background: var(--panel); padding: 8px; z-index: 10; }
+.skip-link:focus { top: 8px; }
+.concept-tree { overflow-x: auto; padding: 24px; background: var(--panel); border-radius: 12px; }
+.concept-root { border: 2px solid var(--internal); border-radius: 8px; padding: 12px; width: 220px; margin: auto; text-align: center; }
+.concept-branches { text-align: center; min-width: 660px; color: var(--muted); }
+.concept-leaves { display: flex; align-items: center; gap: 10px; justify-content: center; min-width: 660px; }
+.concept-leaves span { padding: 12px; border: 2px solid var(--leaf); border-radius: 8px; text-align: center; }
+.concept-leaves b { color: var(--leaf); }
+.concept-leaves small { color: var(--muted); }
+@media (max-width: 980px) {
+  .stage { grid-template-columns: minmax(0, 1fr); }
+  .stage .side { flex-basis: auto; }
+  .canvas-wrap { min-height: 180px; }
+  .codepanel { max-height: 320px; }
+}
+@media (max-width: 600px) {
+  .viz-main { padding: 16px 16px 48px; }
+  .viz-main p, .viz-main li { font-size: 15px; }
+  .viz-main th, .viz-main td { padding: 8px 6px; font-size: 12px; overflow-wrap: anywhere; }
+  .controls { gap: 6px; }
+  .controls button { font-size: 13px; padding: 6px 9px; }
+  .concept-root { margin-left: 220px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+/* Give the complete tree the full reading width, with explanation/code below. */
+.stage { grid-template-columns: minmax(0, 1fr); }
+.stage .side { display: grid; grid-template-columns: minmax(260px, 35%) minmax(0, 1fr); gap: 0 20px; align-items: start; }
+.stage .controls { grid-column: 1; grid-row: 1; }
+.stage .caption { grid-column: 1; grid-row: 2; align-self: start; }
+.stage .codepanel { grid-column: 2; grid-row: 1 / 4; }
+.canvas-wrap { min-height: 180px; }
+@media (max-width: 760px) {
+  .stage .side { display: flex; flex-direction: column; }
+  .stage .side > * { width: 100%; box-sizing: border-box; }
+}
+.codepanel pre { tab-size: 2; }
