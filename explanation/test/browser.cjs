@@ -8,7 +8,7 @@ const {pathToFileURL}=require('node:url');
  const base=pathToFileURL(path.resolve(__dirname,'..')+path.sep).href;
  for(const width of [1440,390]) {
   await page.setViewportSize({width,height:1050});
-  for(const name of ['index.html','overview.html',...['latching','rebalance','get','insert','node-insert','split','delete','merge','structure'].map(s=>'topics/'+s+'.html')]) {
+  for(const name of ['index.html','overview.html',...['latching','rebalance','variations','get','insert','node-insert','split','delete','merge','structure'].map(s=>'topics/'+s+'.html')]) {
    await page.goto(base+name);
    const result=await page.evaluate(()=>{
     const failures=[];let total=0;

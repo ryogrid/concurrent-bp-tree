@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>9. B+木にはほかの設計もある — Goで学ぶB+木</title>
+  <link rel="stylesheet" href="../shared/viz.css">
+</head>
+<body class="viz-topic">
+<a class="skip-link" href="#main">本文へ</a>
+<main class="viz-main" id="main">
+  <nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="rebalance.html">← 大きな木のリバランシング</a></nav>
+  <header>
+    <p class="eyebrow">GO B+ TREE / LESSON 09</p>
+    <h1>9. B+木にはほかの設計もある</h1>
+    <p class="lead">ここまで見た木は、B+木を実装する方法の一例です。</p>
+  </header>
+
+  <p>B+木には、ページ内でのキーの置き方、分裂・削除後の修復方法、ページをいつ解放するか、並行操作をどう同期するかなど、多くの設計があります。この教材のGo実装は、葉のデータと内部ノードの分離キーを持つオンディスクKVSで、親から子へラッチを受け渡す方式を採用しています。ほかの方式を読むときは、<strong>どのページを保持し、構造変更中でもどう正しいページにたどり着くか</strong>を見ると違いをつかみやすくなります。</p>
+
+  <section>
+    <h2>最初はRで探し、更新が必要なところでWを取る</h2>
+    <p>この実装の<code>Put</code>と<code>Delete</code>は、最初からrootMuと通過するページのWラッチを取得します。途中のページに書き込みが必要になる可能性を見込んだ、追いやすい規則です。ただし、別々の葉を更新する操作でも、上位ページを通過する間はW同士が競合します。</p>
+    <p>別の方法として、まずRラッチで葉まで探索し、更新するページでWラッチを取り直す方式があります。葉に空きがあり、親を変更しなくてよい挿入などでは、上位ページをRで共有できるため、競合を減らせる場合があります。満杯の葉の分裂や削除後のマージが必要なら、親や祖先のWも必要です。その場合はRでの探索を終えてルートからWで再探索する、という実装も考えられます。</p>
+    <p><strong>RからWへの切り替えは、そのまま安全な昇格を意味しません。</strong>複数の更新者がRを保持したまま互いのWを待つと、進めなくなります。Rを解放してWを取り直す間には、ほかの操作がキーや分岐を変える可能性もあります。そのため、取得後に対象ページと探索経路を再確認し、条件が変わっていたら再探索します。正しい手順と性能上の効果は、ラッチの種類や競合の多さにも左右されます。この教材のGo実装と可視化には、このR先行の更新方式を採用していません。</p>
+  </section>
+
+  <section>
+    <h2>B-link木：右隣へ進めるようにする</h2>
+    <p><strong>B-link木</strong>は、並行する構造変更を扱うためのB木系の方式です。各ページに右隣のページへのリンクと、そのページが扱うキー範囲の上限を表す情報（high key）を持たせます。探索中に親で見た分岐が古くなり、目的のキーが右へ移っていても、上限を確認して右リンクをたどれば目的のページへ進めます。</p>
+    <p>これにより、分裂時に親の更新がまだ終わっていない間も探索を進める設計が可能です。その代わり、右リンクと上限キーの更新順序、古いページの扱い、削除後の整理などを含めた別の規則が必要です。この実装の葉には範囲走査用の<code>nextLeafPID</code>がありますが、内部ページの右リンクとhigh keyを使うB-link木ではありません。</p>
+  </section>
+
+  <aside class="reading-note"><strong>この章の位置づけ</strong>　R先行の更新方式とB-link木は、選べる設計の例です。ここまでの図とGoコードが示す動作は、このリポジトリで採用したクラブラッチング方式に対応します。</aside>
+  <p>原典を読む場合は、LehmanとYaoの論文 <a href="https://pages.cs.wisc.edu/~yxy/cs764-f20/papers/blink.pdf">Efficient Locking for Concurrent Operations on B-Trees (1981)</a> がB-link木の構造と並行操作を説明しています。</p>
+  <nav class="viz-nav" aria-label="章の移動"><a href="rebalance.html">← 大きな木のリバランシング</a><a href="../index.html">目次へ</a></nav>
+</main>
+</body>
+</html>

@@ -209,8 +209,14 @@ const topicFiles = fs.readdirSync(path.join(__dirname, "../topics"))
   .filter(f => f.endsWith(".html"));
 
 for (const f of topicFiles) {
-  test(`topics/${f}: ページスクリプト実行 + 全ステップ描画`, () => {
+  test(`topics/${f}: ${f === "variations.html" ? "文章と章リンク" : "ページスクリプト実行 + 全ステップ描画"}`, () => {
     const html = fs.readFileSync(path.join(__dirname, "../topics", f), "utf8");
+    if (f === "variations.html") {
+      assert.match(html, /最初はRで探し/);
+      assert.match(html, /B-link木/);
+      assert.match(html, /href="rebalance.html"/);
+      return; // この章は文章のみ
+    }
     // id 属性を持つ要素をスタブ生成 (構造は buildDemo が作るので空divで足りる)
     byId.clear();
     for (const m of html.matchAll(/id="([^"]+)"/g))
