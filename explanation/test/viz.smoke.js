@@ -202,7 +202,7 @@ test("viz: コードパネルの行番号とファイル名が GitHub リンク"
 vm.runInThisContext(fs.readFileSync(
   path.join(__dirname, "../shared/topics.js"), "utf8"));
 
-for (const file of ["go-source.js", "lesson.js"]) vm.runInThisContext(fs.readFileSync(
+for (const file of ["go-source.js", "lesson.js", "latching-viz.js", "rebalance-scenarios.js"]) vm.runInThisContext(fs.readFileSync(
   path.join(__dirname, "../shared", file), "utf8"));
 
 const topicFiles = fs.readdirSync(path.join(__dirname, "../topics"))
@@ -222,6 +222,16 @@ for (const f of topicFiles) {
     // 構築された各デモを全ステップ再生
     let demos = 0;
     for (const el of byId.values()) {
+      if (el._latchMount) {
+        demos++;
+        for(let i=0;i<el._latchMount.count;i++) {
+          el._latchMount.show(i);
+          const m=el._latchMount, st=m.frames[i];
+          assert.equal(m.viz.nodes.size,Object.keys(st.state.nodes).length);
+          for(const [id,e] of m.viz.nodes) assert.equal(!!e.el.querySelector('.latch-badge'),!!st.marks[id]);
+        }
+        continue;
+      }
       if (!el._mount) continue;
       demos++;
       for (let i = 0; i < el._mount.count; i++) {

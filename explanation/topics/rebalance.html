@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>8. 大きな木のリバランシング</title><link rel="stylesheet" href="../shared/viz.css"></head>
+<body class="viz-topic"><a class="skip-link" href="#main">本文へ</a><main class="viz-main" id="main">
+<nav class="viz-nav"><a href="../index.html">目次</a><a href="structure.html">← 木の高さ</a></nav>
+<header><p class="eyebrow">GO B+ TREE / LESSON 08</p><h1>8. 大きな木のリバランシング</h1><p class="lead">不足が上へ伝わるとき、どこまで直せばよいのでしょうか。</p></header>
+<p>葉のマージで親の分離キーが1つ減ると、その親も下限を割ることがあります。その場合は同じ親を持つ内部ノード同士で借用かマージを行います。借用で下限を回復できた時点、またはマージ後も親が下限以上なら、修復はそこで止まります。</p>
+<p>ここでも最大4・最小2のモデルを使いますが、木は高さ4です。詳細図は横へスクロールできます。その下の全体図で丸を選ぶと該当ページへ移動します。丸は緑＝葉、橙＝内部ノード、青＝R保持、赤＝W保持。キーボードではTabで選択しEnterで移動できます。「次へ」で不足が上へ伝わる順番と保持中のWを追ってください。</p>
+<section><h2>1. 3回のマージでも高さは変わらない</h2><p>80キーから10を削除します。葉、親、その上の内部ノードと順に合体します。すべての葉の深さは等しいままです。ルートに分岐が残るため、高さは4のままです。</p><div id="d1"></div></section>
+<section><h2>2. 不足がルートに届き、高さが下がる</h2><p>40キーから10を削除します。同じようにマージが連鎖しますが、最後にルートの子が1つになります。この子を新しいルートにすると、すべての葉が1段ずつ浅くなります。</p><div id="d2"></div></section>
+<section><h2>3. 上の段で借りて、連鎖を止める</h2><p>80キーの木から10〜360を削除して準備し、次に370を削除します。葉とその親ではマージが必要ですが、上の段には余裕のある右兄弟があります。内部ノードの借用では親の分離キーも入れ替わる点に注目してください。</p><div id="d3"></div></section>
+<p>削除のために安全でない子へ降りるときは祖先のWを保持します。そのため、修復が上に伝わっても、後から下→上の順に親を取り直す必要はありません。途中の図では一時的な不足や解放対象も表示します。操作終了時には下限・分岐・葉チェーンが整います。</p>
+<nav class="viz-nav"><a href="structure.html">← 木の高さ</a><a href="../index.html">目次へ</a></nav>
+<script src="../shared/bptree-sim.js"></script><script src="../shared/bptree-viz.js"></script><script src="../shared/go-source.js"></script><script src="../shared/lesson.js"></script><script src="../shared/topics.js"></script><script src="../shared/rebalance-scenarios.js"></script>
+<script>rebalanceScenarios.forEach((cfg,i)=>buildDemo(document.getElementById("d"+(i+1)),cfg));</script>
+</main></body></html>

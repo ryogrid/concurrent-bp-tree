@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>0. 全体像 — Goで学ぶB+木</title><link rel="stylesheet" href="shared/viz.css"></head>
-<body class="viz-topic"><a class="skip-link" href="#main">本文へ</a><main class="viz-main" id="main"><nav class="viz-nav"><a href="index.html">目次</a><a href="topics/get.html">次：キーを探す →</a></nav>
+<body class="viz-topic"><a class="skip-link" href="#main">本文へ</a><main class="viz-main" id="main"><nav class="viz-nav"><a href="index.html">目次</a><a href="topics/latching.html">次：クラブラッチング →</a></nav>
 <header><p class="eyebrow">GO B+ TREE / LESSON 00</p><h1>ファイルのページから木を組み立てる</h1><p class="lead">データの並べ方と、それを安全に触るための仕組みを分けて考えます。</p></header>
 <h2>1. 葉にはデータ、内部ノードには道案内</h2><p>KVSはキーから値を引く仕組みです。この実装はキーと値の両方にint64を使います。葉にはキーと値のペアを昇順で置き、内部ノードには分離キーと子への参照を置きます。</p>
 <div class="concept-tree" role="img" aria-label="内部ノード30、50から、30未満の葉10と20、30以上50未満の葉30と40、50以上の葉50と60へ分岐する"><div class="concept-root">内部ノード　30 ｜ 50</div><div class="concept-branches">↙　　　　　　　 ↓　　　　　　　 ↘</div><div class="concept-leaves"><span>10:1000　20:2000<br><small>キー &lt; 30</small></span><b>→</b><span>30:3000　40:4000<br><small>30 ≤ キー &lt; 50</small></span><b>→</b><span>50:5000　60:6000<br><small>50 ≤ キー</small></span></div></div>
@@ -13,5 +13,5 @@
 <p><strong>取得はfetch → latch、解放はunlatch → unpin。</strong>ラッチを持ったままpinを外すと、内容を使っているフレームが別のページに再利用されかねません。R同士は共有できますが、Wは他のR/Wと同時に保持できません。</p>
 <h2>4. 範囲走査と並行書き込み</h2><p><code>RangeScan(start,end)</code> は両端を含む範囲を昇順で返します。葉を移るときは、次の葉のRを取ってから現在の葉のRを解放します。途中の分裂で移動したキーを取りこぼさないためです。</p><p>走査全体のスナップショットは作りません。並行して挿入・削除されたキーが結果に入るかはタイミングによります。この教材のページラッチは、DBMSのトランザクション分離や行ロックとは別の仕組みです。</p>
 <h2>5. 書き出しと永続性の範囲</h2><p>変更したページはdirtyとして記録し、バッファからの退避時やClose時にファイルへ書き出します。各Put/Delete後のwriteMetaも、まずバッファ上のメタページを更新する処理です。</p><p><strong>fsync、WAL、クラッシュリカバリは実装していません。</strong>正常なClose後の再オープンは扱いますが、電源断やI/Oエラー途中からの復旧を保証するものではありません。Closeは、他の操作をすべて終えてから呼びます。</p>
-<h2>コードを読む順番</h2><p><a href="https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/const.go">const.go</a>で容量、<a href="https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/node.go">node.go</a>でページ内操作、<a href="https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/tree.go">tree.go</a>で探索と構造変更を確認します。次の章からは、対応する箇所を図の横へ抜き出して表示します。</p>
-<a class="start-link" href="topics/get.html">1. キーを探す →</a></main></body></html>
+<h2>コードを読む順番</h2><p><a href="https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/const.go">const.go</a>で容量、<a href="https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/node.go">node.go</a>でページ内操作、<a href="https://github.com/ryogrid/concurrent-bp-tree/blob/master/bptree/tree.go">tree.go</a>で探索と構造変更を確認します。まずラッチの規則と並行動作を学び、その後にコード付きの各章へ進みます。</p>
+<a class="start-link" href="topics/latching.html">コードの前に：クラブラッチング →</a></main></body></html>

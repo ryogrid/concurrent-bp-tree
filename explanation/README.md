@@ -5,6 +5,10 @@
 ## 構成
 
 - `overview.html`: ページ、バッファプール、pin、ラッチ、永続性の範囲
+- `topics/latching.html`: コードを読む前のクラブラッチング導入。2スレッドの取得・待機・解放を5例で追う
+- `topics/rebalance.html`: 高さ4の木でマージの連鎖・ルート縮小・内部ノードの借用を追う。全体図から詳細へ移動可能
+- `shared/latching-viz.js`: ラッチ互換性と保持を検査しながら代表的な実行順を記録
+- `shared/rebalance-scenarios.js`: 大きな木の準備データと操作（解説とテストで共有）
 - `topics/*.html`: 各操作の解説、初期データ、再生する操作
 - `shared/bptree-sim.js`: 容量4/2に縮小した操作モデルと状態スナップショット
 - `shared/bptree-viz.js`: スナップショットからノード・エッジ・ラッチを描画
@@ -40,6 +44,6 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-ブラウザ検証は全9ページを1440px/390px幅で開き、全デモの順送り・逆送り、SVG領域、エッジ本数と座標、ラッチバッジ、コード抜粋、操作ボタンを検査します。
+ブラウザ検証は全11ページを1440px/390px幅で開き、全デモの順送り・逆送り、SVG領域、エッジ本数と座標、ラッチバッジ、コード抜粋、操作ボタンを検査します。
 
 GitHub Pagesはmasterへの解説ファイルのpushで配信されます。CIでは公開前にソースの同期とNodeテストを検査します。

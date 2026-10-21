@@ -8,17 +8,17 @@ const {pathToFileURL}=require('node:url');
  const base=pathToFileURL(path.resolve(__dirname,'..')+path.sep).href;
  for(const width of [1440,390]) {
   await page.setViewportSize({width,height:1050});
-  for(const name of ['index.html','overview.html',...['get','insert','node-insert','split','delete','merge','structure'].map(s=>'topics/'+s+'.html')]) {
+  for(const name of ['index.html','overview.html',...['latching','rebalance','get','insert','node-insert','split','delete','merge','structure'].map(s=>'topics/'+s+'.html')]) {
    await page.goto(base+name);
    const result=await page.evaluate(()=>{
     const failures=[];let total=0;
     const fail=s=>failures.push(s);
     if(document.documentElement.scrollWidth>innerWidth+1) fail('page overflow '+document.documentElement.scrollWidth);
-    for(const el of document.querySelectorAll('.stage')) {
-     const m=el._mount;
+    for(const el of document.querySelectorAll('.stage, .latch-stage')) {
+     const m=el._mount || el._latchMount, latch=!!el._latchMount;
      for(let i=0;i<m.count;i++) {
       m.show(i);total++;
-      const step=m.steps[i], svg=m.viz.svg;
+      const step=(m.steps || m.frames)[i], svg=m.viz.svg;
       const r=svg.getBoundingClientRect(),c=m.viz.canvas.getBoundingClientRect();
       if(r.width<c.width-1||r.height<c.height-1) fail('svg clipped '+i);
       for(const [id,entry] of m.viz.nodes) {
@@ -26,6 +26,8 @@ const {pathToFileURL}=require('node:url');
        const expected=step.marks[id];
        if(Boolean(badge)!==Boolean(expected)) fail('badge '+i+' '+id);
        if(badge&&!badge.classList.contains(expected)) fail('badge mode '+i+' '+id);
+       if(latch && badge && badge.textContent!==step.owners[id].map(([t,m])=>t+':'+m).join(' ')) fail('owner '+i+' '+id);
+       if(latch && entry.el.querySelectorAll('.wait-badge').length!==Object.values(step.waiting).filter(w=>w.id===id).length) fail('wait badge '+i+' '+id);
        if(!step.state.nodes[id]||step.statuses[id]==='freed') continue;
        const nr=entry.el.getBoundingClientRect();
        if(nr.left<c.left-1||nr.right>c.right+1) fail('node outside '+i+' '+id);
@@ -41,13 +43,25 @@ const {pathToFileURL}=require('node:url');
        for(const attr of ['x1','x2']) {const n=Number(line.getAttribute(attr));if(!Number.isFinite(n)||n<0||n>c.width) fail('edge x '+i);}
        for(const attr of ['y1','y2']) {const n=Number(line.getAttribute(attr));if(!Number.isFinite(n)||n<0||n>c.height) fail('edge y '+i);}
       }
-      if(!el.querySelector('.ln.hl')) fail('source highlight '+i);
-      for(const source of step.source) for(const line of source.lines) {
+      if(!latch && !el.querySelector('.ln.hl')) fail('source highlight '+i);
+      for(const source of step.source || []) for(const line of source.lines) {
        if(GoSource[source.file][line.no-1]!==line.text) fail('source mismatch '+i);
       }
      }
      for(let i=m.count-1;i>=0;i--) m.show(i);
      m.show(0);
+     if(latch) {
+      el.querySelector('.l-next').click();
+      if(el.querySelector('.l-stepno').textContent!==`2 / ${m.count}`) fail('latch next');
+      el.querySelector('.l-reset').click();
+      if(!el.querySelector('.l-prev').disabled) fail('latch reset');
+      continue;
+     }
+     const dots=el.querySelectorAll('.tree-overview circle');
+     if(dots.length) {
+      dots[dots.length-1].dispatchEvent(new MouseEvent('click'));
+      if(el.querySelector('.canvas-wrap').scrollLeft<=0) fail('overview navigation');
+     }
      const beforeY = scrollY;
      el.querySelector('.b-next').click();
      if(el.querySelector('.stepno').textContent !== `2 / ${m.count}`) fail('next button');

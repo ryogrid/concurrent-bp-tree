@@ -201,7 +201,9 @@
         badge.className = "latch-badge"; el.appendChild(badge);
       }
       badge.className = "latch-badge " + lat;
-      badge.textContent = lat === "W" ? "W排他" : "R共有";
+      const owners = this.lastStep.owners && this.lastStep.owners[id];
+      badge.textContent = owners ? owners.map(([t, mode]) => t + ":" + mode).join(" ") :
+        lat === "W" ? "W排他" : "R共有";
     }
 
     // セル(葉ペア / sep / 子ptr)の差分同期。
@@ -350,6 +352,7 @@
       i = stepIdx;
       const st = cfg.steps[i];
       viz.render(st);
+      if (cfg.onShow) cfg.onShow(st, viz);
       if (caption) caption.textContent = st.caption || "";
       if (btnP) btnP.disabled = i === 0;
       if (btnN) btnN.disabled = i === cfg.steps.length - 1;

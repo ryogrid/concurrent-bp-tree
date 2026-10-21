@@ -3,6 +3,23 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const { BptreeSim } = require("../shared/bptree-sim.js");
+require('../shared/rebalance-scenarios.js');
+test('large trees: cascading merge, root shrink and internal borrow', () => {
+  for (const [i,c] of rebalanceScenarios.entries()) {
+    const s=new BptreeSim(); c.prep(s); checkInvariants(s);
+    assert.equal(s.height,4);
+    const events=c.ops[0](s).steps.flatMap(st=>st.events);
+    checkInvariants(s);
+    assert.equal(s.height,c.height);
+    assert.equal(events.filter(e=>e.t==='merge').length,i===2?2:3);
+    assert.equal(events.some(e=>e.t==='rootShrink'),i===1);
+    assert.equal(events.some(e=>e.t==='borrow'&&e.dir==='right'),i===2);
+    const keys=[...s.pages.values()].filter(n=>n.leaf).flatMap(n=>n.keys).sort((a,b)=>a-b);
+    const expected=[];
+    for(let k=c.remove+10;k<=c.limit;k+=10) if(k!==c.key) expected.push(k);
+    assert.deepEqual(keys,expected);
+  }
+});
 
 // ---- helpers ------------------------------------------------------------
 

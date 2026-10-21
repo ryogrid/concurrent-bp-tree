@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>基礎：クラブラッチング — Goで学ぶB+木</title><link rel="stylesheet" href="../shared/viz.css"></head>
+<body class="viz-topic"><a class="skip-link" href="#main">本文へ</a><main class="viz-main" id="main">
+<nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="../overview.html">← 前の章</a><a href="get.html">次：キーを探す →</a></nav>
+<header><p class="eyebrow">GO B+ TREE / CONCURRENCY PRIMER</p><h1>コードを読む前に：クラブラッチング</h1><p class="lead">親を離す前に子をつかむ。必要なページだけを短時間守り、木全体を止めずに進む。</p></header>
+
+<p>B+木では、あるスレッドがページを読んでいる間にも、別のスレッドが分裂やマージによってページの内容や接続を変えようとします。親を先に解放してから子を取りに行くと、その間に選んだ子が移動・解放されるかもしれません。そこで使うのが<strong>ラッチクラビング（latch crabbing、ラッチカップリング）</strong>です。</p>
+<p>蟹が片方のはさみを離す前に、もう片方で次の足場をつかむように、<strong>次のページをラッチしてから現在のページを解放</strong>します。ラッチはページのメモリ上の構造を守る短時間の同期です。トランザクションの分離性を提供する行ロックや、永続性を提供するWALとは役割が違います。</p>
+
+<h2>RとWの互換性</h2>
+<table class="compat-table"><thead><tr><th>先に保持中</th><th>新しいR（共有）</th><th>新しいW（排他）</th></tr></thead><tbody>
+<tr><th>なし</th><td class="yes">取得できる</td><td class="yes">取得できる</td></tr>
+<tr><th>R</th><td class="yes">同時に取得できる</td><td class="no">Rの解放を待つ</td></tr>
+<tr><th>W</th><td class="no">Wの解放を待つ</td><td class="no">Wの解放を待つ</td></tr>
+</tbody></table>
+<p><code>Get</code>と<code>RangeScan</code>はRラッチを使い、<code>Put</code>と<code>Delete</code>はWラッチを使います。R同士は同じページを同時に読めます。Wは内容を書き換えるため、そのページではほかのR/Wと同時に保持できません。ページが違えばW同士でも並行できます。</p>
+
+<h2>縦に下降するときの4ステップ</h2>
+<div class="rule-flow">
+  <div><strong>現在ページを保持</strong>ルートまたは親をR/Wラッチし、分離キーから進む子を決める。</div>
+  <div><strong>子をpinしてラッチ</strong><code>fetch</code>でフレームをpinし、親を保持したまま子のR/Wを取る。</div>
+  <div><strong>解放可否を判断</strong>読み取りなら常に親を解放。書き込みなら、子が安全な場合だけ不要な祖先を解放する。</div>
+  <div><strong>子を現在位置にする</strong>親はunlockしてからunpinする。同じ手順を葉まで繰り返す。</div>
+</div>
+<div class="latch-order"><span>rootMu（ルート特定）</span><b>→</b><span>親ページ</span><b>→</b><span>子ページ</span><b>→</b><span>必要なら兄弟を左から右</span></div>
+<p><code>rootMu</code>は「ルートがどのページか」と高さを守る専用ラッチです。ページ内容を守るR/Wラッチとは別物です。ページを取得するときは<strong>fetch（pin）→ latch</strong>、手放すときは<strong>unlatch → unpin</strong>の順です。ラッチしたままunpinすると、使用中のフレームが別ページに再利用される危険があります。</p>
+<p>この実装のrootMuは、GetではルートページのR取得後に解放します。Put/Deleteでは、開始時のルートがその操作に安全なら早期解放し、それ以外は操作終了まで保持します。ページラッチを解放してもrootMuを保持する場合があります。図の下部と各スレッドの保持一覧で区別できます。</p>
+<p>ページ割当・解放のmetaMu、バッファ管理のpool.muは短い管理区間に使います。metaMuを保持したままページラッチやrootMuを取りません。pool.muを保持したまま別のラッチを待ちません。図ではこれらの管理区間とpinの増減を省略し、ページラッチとrootMuを表示します。</p>
+
+<h2>書き込みでは「安全な子」まで祖先を保持する</h2>
+<div class="safety-grid">
+  <div><h3>Putに対して安全</h3><p><code>count &lt; Max</code>。1件増えても分裂しないため、構造変更はこの子より上へ伝わりません。子のW取得後、祖先を解放できます。</p></div>
+  <div><h3>Deleteに対して安全</h3><p><code>count &gt; Min</code>。1件減ってもアンダーフローしないため、借用・マージは不要です。子のW取得後、祖先を解放できます。</p></div>
+</div>
+<p>子が安全でなければ、分裂またはマージが親へ伝わる可能性があります。その場合は子だけでなく、変更を受け止める親・祖先のWラッチも保持したまま下降します。安全な子に到達した時点で、それより上の祖先をまとめて解放します。子が安全でなくても、その親が安全なら、親より上の祖先は不要です。借用・マージは<strong>同じ親の子同士</strong>で行います。葉リンクで隣接しているだけでは兄弟とは限りません。</p>
+
+<h2>横へ進むときは左から右</h2>
+<p>範囲走査は現在の葉をR保持したまま、<code>nextLeafPID</code>が指す右の葉をRラッチし、それから現在の葉を解放します。これにより分裂途中のキーを飛ばしません。複数ページを取る順序を<strong>左から右</strong>に統一すると、互いに逆方向を待つデッドロックを防げます。</p>
+<p>削除対象が右端の葉の場合は左兄弟が必要になり、通常の順序とは逆向きになります。この例外では左の葉を待たずに<code>TryLock</code>します。失敗したら削除したキーと値を戻し、全ラッチを解放してルートから再試行します。内部ノードの左兄弟は、水平走査の対象ではないため、共通の親をW保持した状態で取得します。</p>
+
+<aside class="reading-note"><strong>可視化の見方</strong>　T1とT2は別スレッド（Goではgoroutine）です。ページ上の<code>T1:R</code>/<code>T2:W</code>が保持中のラッチ、赤い破線の「待機」が取得要求です。Rは青、Wは赤で示し、スレッド名で所有者を区別します。「次へ」で取得・解放を1つずつ進めてください。これは実装に沿った代表的な実行順のモデルで、全スケジュールの証明や実スレッドの実行ではありません。横長の木は横スクロールできます。</aside>
+
+<section><h2>1. 2つのGet：Rを共有する</h2><p>同じルートを読む時間が重なってもR同士は両立します。子を確保して親を放した後は、左右の部分木を独立に進みます。</p><div id="shared-reads"></div></section>
+<section><h2>2. 同じ葉のGetとPut：Wが待つ</h2><p>読み取り中の葉へ書き込むことはできません。GetがRを解放してからPutがWを取得するので、途中の値を読むことはありません。</p><div id="read-write"></div></section>
+<section><h2>3. 別の葉への2つのPut：安全な祖先を早期解放する</h2><p>ルートでは一時的に直列化されますが、安全な子へ降りたスレッドはルートをすぐ解放します。その後は別の葉を同時にW保持できます。</p><div id="disjoint-writes"></div></section>
+<section><h2>4. RangeScanとDelete：TryLockで待機サイクルを切る</h2><p>走査が左葉を持って右葉を待ち、削除が右葉を持って左葉を待つと循環します。削除側が左葉で待たずに戻ることで、両方が進めます。</p><div id="scan-delete"></div></section>
+<section><h2>5. 満杯の葉へのPutとGet：分裂が終わるまで親を保持する</h2><p>今度は右端の葉が満杯です。T1は葉を分けて親の分岐を更新するまで親のWを保持します。T2は親のRで待ち、更新後の分岐を読んでから子へ進むため、途中の未接続ノードへ進みません。</p><div id="unsafe-split"></div></section>
+
+<h2>この規則で何が保証されるか</h2>
+<ul>
+  <li>親から選んだ子が、ラッチの空白時間に分裂・解放されることを防ぐ。</li>
+  <li>同じページの書き込みと読み書きを直列化し、途中状態を観測・上書きしない。</li>
+  <li>安全な子で祖先を解放し、関係のない部分木の操作を並行させる。</li>
+  <li>上から下、左から右という順序とTryLock再試行により、待機の循環を作らない。</li>
+</ul>
+<p>次の章から、ここで見た規則がGoコードのどの行に対応するかを、1操作ずつ確認します。</p>
+<p>ラッチは木の構造と短い読み書きを保護します。RangeScan全体のスナップショット、トランザクション分離、飢餓がないことまでは保証しません。実装では競合時に再試行上限へ到達するとエラーを返す場合があります。</p>
+<a class="start-link" href="get.html">コードと図で見る：1. キーを探す →</a>
+<nav class="viz-nav" aria-label="章の移動"><a href="../index.html">目次</a><a href="../overview.html">← 前の章</a><a href="get.html">次：キーを探す →</a></nav>
+<script src="../shared/bptree-sim.js"></script>
+<script src="../shared/bptree-viz.js"></script>
+<script src="../shared/latching-viz.js"></script>
+<script>
+mountLatchDemo(document.getElementById("shared-reads"), "sharedReads");
+mountLatchDemo(document.getElementById("read-write"), "readWrite");
+mountLatchDemo(document.getElementById("disjoint-writes"), "disjointWrites");
+mountLatchDemo(document.getElementById("scan-delete"), "scanDelete");
+mountLatchDemo(document.getElementById("unsafe-split"), "unsafeSplit");
+</script>
+</main></body></html>
