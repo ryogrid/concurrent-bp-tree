@@ -8,6 +8,8 @@
 
 **[小さな図から理解するB+木とページラッチ](https://ryogrid.github.io/concurrent-bp-tree/index.html)**
 
+リポジトリ全体の構造やコードの関係は、**[DeepWiki: ryogrid/concurrent-bp-tree](https://deepwiki.com/ryogrid/concurrent-bp-tree)** からも参照できます。
+
 ## 特徴
 
 - 8 KiBの固定長ページを使う、単一ファイルのオンディスクKVS
